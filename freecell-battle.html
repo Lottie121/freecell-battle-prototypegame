@@ -1,0 +1,3310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>空当接龙战斗原型</title>
+  <style>
+    /* ===== 全局样式 ===== */
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #f0f2f5;          /* 浅灰背景，衬托牌面 */
+      font-family: "Microsoft YaHei", sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      user-select: none;            /* 拖动时不选中文字 */
+    }
+
+    /* ===== 顶部标题栏：标题 + 撤回 / 重新开始 ===== */
+    #topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 20px 0;
+    }
+    #topbar h1 {
+      margin: 0 8px 0 0;
+      font-size: 26px;
+      color: #333;
+    }
+
+    /* 顶部按钮 */
+    #topbar button {
+      padding: 6px 14px;
+      font-size: 14px;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      background: #fff;
+      color: #333;
+      cursor: pointer;
+    }
+    #topbar button:hover:not(:disabled) { background: #f2f2f2; }
+    #topbar button:disabled { color: #bbb; cursor: default; }
+
+    /* ===== 操作提示文字：不符合规则时短暂显示 ===== */
+    #tip {
+      height: 24px;                 /* 固定高度，出现 / 消失时页面不会跳动 */
+      margin-bottom: 8px;
+      font-size: 14px;
+      color: #c0392b;
+      opacity: 0;                   /* 默认隐藏 */
+    }
+    #tip.show { opacity: 1; }       /* 加上 show 类才显示出来 */
+
+    /* ===== 通关提示：四个回收区都收到 K 时出现 ===== */
+    #win {
+      display: none;
+      margin-bottom: 8px;
+      font-size: 18px;
+      font-weight: bold;
+      color: #d4a017;
+    }
+    #win.show { display: block; }
+    #win.lose { color: #c0392b; }   /* 战斗失败时换成红色 */
+
+    /* ===== 底部一排：回收区 + 调度槽，整体宽 752px，与上方牌桌 8 列对齐 ===== */
+    #slots {
+      display: flex;
+      gap: 16px;
+      margin-top: 20px;
+    }
+
+    /* 4 个回收区（左）与 4 个调度槽（右）各占一半，间距与牌列一致 */
+    #foundations,
+    #freecells {
+      display: flex;
+      gap: 16px;
+    }
+
+    .foundation {
+      width: 80px;
+      height: 112px;
+      box-sizing: border-box;       /* 让 80px 含边框，才能和上方 8 列严格对齐 */
+      border: 2px dashed #bbb;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      font-size: 13px;
+      color: #999;
+    }
+
+    /* 空回收区显示文字提示，放了牌之后自动隐藏（:empty 生效） */
+    .foundation:empty::before { content: attr(data-label); }
+
+    /* 各回收区沿用对应花色的配色 */
+    .foundation.fire    { border-color: #e3b0aa; color: #c0392b; }
+    .foundation.thunder { border-color: #e8dcaa; color: #c9a227; }
+    .foundation.water   { border-color: #a9c6e0; color: #1f6fb2; }
+    .foundation.wood    { border-color: #a8d5b5; color: #2e8b57; }
+
+    /* 已回收的牌固定在回收区，不能再被拖动 */
+    .foundation .card { pointer-events: none; }
+
+    /* 回收区只显示最新收进来的那张牌，旧牌保留在 DOM 里记录进度但隐藏 */
+    .foundation .card:not(:last-child) { display: none; }
+
+    /* 回收区外层竖直容器：牌位在上面，最大点数文字在下面 */
+    .foundation-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      width: 80px;                  /* 与牌列同宽，保证和上方 8 列一一对齐 */
+    }
+
+    /* 回收区当前已回收到的最大点数 */
+    .foundation-rank {
+      font-size: 12px;
+      color: #666;
+      white-space: nowrap;
+    }
+
+    /* 该花色已收到 8（谐音「发」）：此后每张回收额外加金 */
+    .foundation-rank.lucky {
+      color: #b8860b;
+      font-weight: 600;
+    }
+
+    /* ===== 牌桌区域：8 列横向排列 ===== */
+    #table {
+      display: flex;
+      gap: 16px;
+    }
+
+    /* ===== 单列牌堆：纵向叠放 ===== */
+    .column {
+      width: 80px;
+      min-height: 112px;            /* 空列也要占位，方便作为放置目标 */
+      display: flex;
+      flex-direction: column;
+      gap: 0;                       /* 不再用间距，改由牌的负外边距控制叠放 */
+      box-sizing: border-box;
+      touch-action: none;           /* 触屏拖动时不要触发页面滚动 */
+    }
+
+    /* 空列显示成一个虚线空位（不再是"移到此处"按钮） */
+    .column:empty {
+      border: 2px dashed #ddd;
+      border-radius: 10px;
+    }
+
+    /* 可以放牌的目标列：高亮提示 */
+    .column.active-drop {
+      outline: 2px dashed #f1c40f;
+      outline-offset: 3px;
+      border-radius: 10px;
+    }
+
+    /* ===== 叠放效果 ===== */
+    /* 牌高 112px，每张只露出顶部 28px，所以用 -84px 负外边距让下一张牌压上来 */
+    .column .card { margin-bottom: -84px; }
+
+    /* 该列最后一张牌不再收回，完整显示（它盖在上面，其他牌被它压住） */
+    .column .card:last-child { margin-bottom: 0; }
+
+    /* ===== 底部调度槽：4 个暂存位（对应标准的 4 个空闲格）===== */
+    /* 排列方式由上面的 #slots / #freecells 共享规则决定 */
+
+    .freecell {
+      width: 80px;
+      height: 112px;
+      box-sizing: border-box;       /* 让 80px 含边框，才能和上方 8 列严格对齐 */
+      border: 2px dashed #ccc;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: #bbb;
+      touch-action: none;
+    }
+
+    /* 空调度槽显示文字提示，暂存了牌之后自动隐藏 */
+    .freecell:empty::before { content: "调度槽"; }
+
+    /* 可放置时的高亮：回收区与调度槽共用 */
+    .foundation.active-drop,
+    .freecell.active-drop {
+      border-color: #f1c40f;
+      background: #fffbe6;
+    }
+
+    /* ===== 单张牌 ===== */
+    .card {
+      width: 80px;
+      height: 112px;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+      background: #fff;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 4px 6px;
+      box-sizing: border-box;
+      cursor: default;              /* 默认不可移动；可移动的牌下面会改成抓取手势 */
+      touch-action: none;
+      -webkit-user-drag: none;
+      position: relative;           /* 承载闪卡星标 / 锁标记等角标 */
+    }
+
+    /* 可以拿起来的牌：鼠标变成"抓取"，提示这张牌能拖 */
+    .card.movable { cursor: grab; }
+    .card.movable:active { cursor: grabbing; }
+
+    /* 火牌：红色系 */
+    .card.fire { color: #c0392b; }
+
+    /* 雷牌：黄色系 */
+    .card.thunder { color: #c9a227; }
+
+    /* 水牌：蓝色系 */
+    .card.water { color: #1f6fb2; }
+
+    /* 木牌：绿色系 */
+    .card.wood { color: #2e8b57; }
+
+    /* 牌面左上角：只放点数，花色只由中间的大图标表示（小图标会挤着点数，已删掉） */
+    .corner {
+      font-size: 16px;
+      font-weight: bold;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    /* “10” 是两个字符，天然比单个数字宽出一截；
+       把它水平压窄到和单个数字一样的宽度。transform-origin 取左，压窄时左边缘不动。 */
+    .card[data-rank="10"] .corner {
+      display: inline-block;
+      transform: scaleX(0.52);
+      transform-origin: left center;
+    }
+
+    /* 牌面中央：大号花色图标 */
+    .center {
+      font-size: 34px;
+      align-self: center;
+    }
+
+    /* ===== 拖动层：拖动中的牌暂时放在这里 ===== */
+    #drag-layer {
+      display: none;
+      position: fixed;
+      left: 0;
+      top: 0;
+      z-index: 999;
+      pointer-events: none;         /* 不挡住下面的放置目标判定 */
+    }
+    #drag-layer.show { display: block; }
+
+    /* 拖动层里同样保持叠放外观，并加阴影表示"正在被拿起" */
+    #drag-layer .card {
+      margin-bottom: -84px;
+      box-shadow: 0 10px 22px rgba(0, 0, 0, 0.32);
+    }
+    #drag-layer .card:last-child { margin-bottom: 0; }
+
+    /* ===== 战斗栏：玩家 / 敌人血量、回合信息、操作按钮 ===== */
+    #battle {
+      width: 752px;                 /* 与牌桌同宽，视觉上对齐 */
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 14px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+      margin-bottom: 10px;
+    }
+
+    .side { flex: 1 1 0; min-width: 0; }
+    .side-name { font-size: 13px; color: #666; margin-bottom: 4px; }
+    .side.enemy .side-name { text-align: right; }
+
+    /* 血条：外层是轨道，内层按百分比改变宽度 */
+    .hp-bar {
+      height: 14px;
+      border-radius: 7px;
+      background: #e9ecef;
+      overflow: hidden;
+    }
+    .hp-fill {
+      height: 100%;
+      width: 100%;
+      border-radius: 7px;
+      background: #2e8b57;          /* 玩家绿色 */
+      transition: width 0.18s ease;
+    }
+    .side.enemy .hp-fill { background: #c0392b; }   /* 敌人红色 */
+
+    .hp-num { font-size: 12px; color: #888; margin-top: 3px; }
+    .side.enemy .hp-num { text-align: right; }
+
+    /* 中间：回合数 / 敌人下一手预告 / 状态标签 */
+    #battle .center { flex: 0 0 210px; text-align: center; }
+    #turn-label { font-size: 13px; font-weight: bold; color: #333; }
+    #telegraph { font-size: 12px; color: #c0392b; min-height: 17px; margin-top: 3px; }
+
+    .chips { display: flex; justify-content: center; gap: 6px; margin-top: 4px; min-height: 20px; }
+    .chip {
+      display: none;                /* 默认不显示，有内容时加 show */
+      padding: 1px 7px;
+      border-radius: 10px;
+      font-size: 11px;
+      background: #eef2f7;
+      color: #33506b;
+      border: 1px solid #d5e0ec;
+    }
+    .chip.show { display: inline-block; }
+    .chip.warn { background: #fdecea; color: #a33; border-color: #f3c9c4; }
+    .chip.toggle { cursor: pointer; }
+    .chip.on { background: #efe3fa; border-color: #b07cc6; color: #6b3fa0; }
+
+    #battle .actions { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; }
+    #battle .actions button {
+      padding: 5px 12px;
+      font-size: 13px;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      background: #fff;
+      color: #333;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #battle .actions button:hover:not(:disabled) { background: #f2f2f2; }
+    #battle .actions button:disabled { color: #bbb; cursor: default; }
+    #moves {
+      padding: 5px 12px;
+      font-size: 13px;
+      font-weight: bold;
+      border: 1px solid #c9a227;
+      border-radius: 6px;
+      background: #fffdf3;
+      color: #8a6d1a;
+      white-space: nowrap;
+      text-align: center;
+    }
+
+    /* ===== 战斗日志：固定 4 行高度，新消息从上面插入 ===== */
+    #log {
+      width: 752px;
+      box-sizing: border-box;
+      height: 84px;                 /* 上下 padding 各 4px + 4 行 × 19px */
+      overflow: hidden;
+      padding: 4px 10px;
+      border: 1px solid #e2e5ea;
+      border-radius: 8px;
+      background: #fafbfc;
+      font-size: 13px;
+      line-height: 19px;
+      color: #555;
+      margin-bottom: 12px;
+    }
+    #log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* ===== 背包：收纳从牌列里挖到的道具 ===== */
+    #bag {
+      display: none;
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      z-index: 900;
+      width: 232px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+      overflow: hidden;
+    }
+    #bag.open { display: block; }
+    #bag h3 {
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 13px;
+      color: #333;
+      background: #f6f7f9;
+      border-bottom: 1px solid #eee;
+    }
+    #bag-items { display: flex; flex-direction: column; }
+    .bag-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-bottom: 1px solid #f0f0f0;
+      cursor: pointer;
+    }
+    .bag-item:last-child { border-bottom: none; }
+    .bag-item:hover { background: #f7fbff; }
+    /* 条件奖励道具：金色描边 + 淡金底，和普通道具区分开 */
+    .bag-item.rare {
+      background: linear-gradient(90deg, #fffdf2, #fff8dc);
+      box-shadow: inset 3px 0 0 #e6b800;
+      border-radius: 6px;
+      margin: 3px 0;
+    }
+    .bag-item.rare:hover { background: linear-gradient(90deg, #fff8dc, #fdf0b8); }
+    .bag-item.rare .bag-name { color: #8a6d00; font-weight: 700; }
+    .bag-icon { font-size: 20px; }
+    .bag-name { font-size: 13px; color: #333; }
+    .bag-desc { font-size: 11px; color: #999; }
+    .bag-empty { padding: 14px 10px; font-size: 12px; color: #999; text-align: center; }
+
+    /* ===== 牌面附加状态 ===== */
+
+    /* 闪卡：右上角一颗星，强化该花色回收时的效果 */
+    .card.foil::after {
+      content: "✦";
+      position: absolute;
+      top: 3px;
+      right: 4px;
+      font-size: 12px;
+      color: #d4a017;
+      text-shadow: 0 0 3px rgba(212, 160, 23, 0.6);
+    }
+
+    /* 道具牌：整张泛金，露出牌面后点击即可收进背包 */
+    .card.item {
+      border-color: #d4a017;
+      box-shadow: 0 0 0 2px #f6e6ae, 0 2px 4px rgba(0, 0, 0, 0.15);
+    }
+    .card.item.collectible { cursor: pointer; }
+    .card.item.collectible:hover { box-shadow: 0 0 0 2px #e8ce70, 0 2px 6px rgba(0, 0, 0, 0.2); }
+
+    /* 被锁住的牌：加一把锁，并且不能移动 */
+    .card.locked { filter: grayscale(0.6); }
+    .card.tainted { box-shadow: inset 0 0 0 2px #b07cc6; }
+    .card.locked::before {
+      content: "🔒" attr(data-lock);    /* 锁标的数字 = 剩余回合数 */
+      position: absolute;
+      left: 4px;
+      bottom: 3px;
+      font-size: 13px;
+      color: #666;
+    }
+
+    /* 被冻结的调度槽：暂时不能用，数字是剩余回合数 */
+    .freecell.frozen { border-color: #a9c6e0; background: #eef6fd; }
+    .freecell.frozen:empty::before { content: "❄️" attr(data-frozen); font-size: 18px; color: #1f6fb2; }
+
+    /* 临时调度槽：道具召唤的额外槽，不影响整组移动上限；用完（清空）后自动消失 */
+    .freecell.temp { border-color: #d4a017; background: #fffbe6; }
+    .freecell.temp.hidden { display: none; }
+    .freecell.temp:empty::before { content: "临时槽"; color: #d4a017; }
+
+    /* 破局技·净化：进入点击模式后高亮可净化目标，按钮进入激活态 */
+    body.purifying .card.locked,
+    body.purifying .freecell.frozen { outline: 3px solid #b07cc6; outline-offset: 2px; }
+    #battle .actions button.on { background: #efe3fa; border-color: #b07cc6; color: #6b3fa0; }
+
+    /* 任意交换 / 强制降落的点选模式：可选目标描边；第一张橙、第二张青绿，颜色区分明显 */
+    body.picking .column .card { outline: 2px dashed #f1c40f; outline-offset: 2px; }
+    .card.pick-first {
+      outline: 5px solid #e67e22;
+      outline-offset: 1px;
+      box-shadow: 0 0 0 4px rgba(230, 126, 34, 0.4), 0 0 16px rgba(230, 126, 34, 0.65);
+      animation: pickPulse 1s ease-in-out infinite;
+    }
+    .card.pick-second {
+      outline: 5px solid #16a085;
+      outline-offset: 1px;
+      box-shadow: 0 0 0 4px rgba(22, 160, 133, 0.4), 0 0 16px rgba(22, 160, 133, 0.65);
+      animation: pickPulse 1s ease-in-out infinite;
+    }
+    /* 选中描边要盖过上面那条 body.picking 的黄虚线（同权重、靠源码顺序取胜） */
+    body.picking .card.pick-first { outline: 5px solid #e67e22; }
+    body.picking .card.pick-second { outline: 5px solid #16a085; }
+    @keyframes pickPulse {
+      0%, 100% { outline-offset: 1px; }
+      50% { outline-offset: 4px; }
+    }
+
+    /* 交换的「确定 / 取消」操作条：显示在背包底部 */
+    #pick-actions {
+      display: none;
+      gap: 8px;
+      padding: 10px;
+      border-top: 1px solid #eee;
+      background: #fffdf5;
+    }
+    #pick-actions.open { display: flex; }
+    #pick-actions button {
+      flex: 1;
+      padding: 8px 0;
+      font-size: 13px;
+      border-radius: 6px;
+      border: 1px solid #bbb;
+      background: #fff;
+      color: #333;
+      cursor: pointer;
+    }
+    #pick-actions button.ok { background: #16a085; border-color: #16a085; color: #fff; font-weight: bold; }
+    #pick-actions button.cancel { color: #666; }
+
+    /* ===== 资源栏：魔力 / 金币 / 防御 + 资源操作按钮 ===== */
+    #resbar {
+      width: 752px;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 8px 14px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+      margin-bottom: 10px;
+    }
+    .res { display: flex; align-items: center; gap: 6px; }
+    .res-label { font-size: 12px; color: #666; white-space: nowrap; }
+    .mana-bar {
+      width: 140px;
+      height: 12px;
+      border-radius: 6px;
+      background: #e6ecf5;
+      overflow: hidden;
+    }
+    .mana-fill {
+      height: 100%;
+      width: 100%;
+      border-radius: 6px;
+      background: #3a7bd5;
+      transition: width 0.18s ease;
+    }
+    .res-num { font-size: 12px; color: #888; white-space: nowrap; }
+    #gold-num { font-size: 13px; font-weight: bold; color: #b8860b; white-space: nowrap; }
+    #defense-num { font-size: 13px; font-weight: bold; color: #1f6fb2; white-space: nowrap; }
+    #resbar .spacer { flex: 1 1 auto; }
+    #resbar button {
+      padding: 5px 10px;
+      font-size: 12px;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      background: #fff;
+      color: #333;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #resbar button:hover:not(:disabled) { background: #f2f2f2; }
+    #resbar button:disabled { color: #bbb; cursor: default; }
+
+    /* 无限移动的倒计时标签 */
+    .chip.mana { background: #eaf2fd; color: #2c5fa8; border-color: #c5daf5; }
+
+    /* ===== 商店：花金币直购大力移动 / 抽随机道具 ===== */
+    #shop {
+      display: none;
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      z-index: 910;
+      width: 248px;
+      border: 1px solid #d4a017;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+      overflow: hidden;
+    }
+    #shop.open { display: block; }
+    #shop h3 {
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 13px;
+      color: #8a6d1a;
+      background: #fffdf3;
+      border-bottom: 1px solid #f0e6c8;
+    }
+    #shop-items { display: flex; flex-direction: column; }
+    .shop-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-bottom: 1px solid #f0f0f0;
+      cursor: pointer;
+      font-size: 13px;
+      color: #333;
+    }
+    .shop-item:last-child { border-bottom: none; }
+    .shop-item:hover { background: #fffbf0; }
+    .shop-item.disabled { color: #bbb; cursor: default; background: #fafafa; }
+    .shop-icon { font-size: 20px; }
+    .shop-cost { margin-left: auto; color: #b8860b; font-size: 12px; white-space: nowrap; }
+
+    /* ===== 拖动时：可接牌的目标高亮 ===== */
+    /* 高亮能接住当前这组牌的“底座牌”（如拖「水4」时高亮「火5」「雷5」） */
+    .card.drop-hint {
+      outline: 3px solid #2ecc71;
+      outline-offset: 1px;
+      box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.35);
+    }
+    /* 点数正好大 1、暖冷交替也满足，但当下还不能落上去的目标牌（空间不够 / 被锁）→ 橙色脉冲高亮 */
+    .card.drop-hint-weak {
+      outline: 5px solid #e67e22;
+      outline-offset: 1px;
+      box-shadow: 0 0 0 4px rgba(230, 126, 34, 0.45), 0 0 18px rgba(230, 126, 34, 0.7);
+      animation: weakPulse 0.8s ease-in-out infinite;
+    }
+    @keyframes weakPulse {
+      0%, 100% { box-shadow: 0 0 0 3px rgba(230, 126, 34, 0.3), 0 0 8px rgba(230, 126, 34, 0.45); }
+      50% { box-shadow: 0 0 0 7px rgba(230, 126, 34, 0.65), 0 0 24px rgba(230, 126, 34, 0.95); }
+    }
+    /* 空调度槽 / 回收区作为目标时的高亮 */
+    .freecell.drop-hint,
+    .foundation.drop-hint {
+      border-color: #2ecc71;
+      background: #eafaf1;
+    }
+
+    /* ===== 长按牌：效果说明气泡 ===== */
+    #card-tip {
+      display: none;
+      position: fixed;
+      z-index: 1200;
+      max-width: 240px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: rgba(30, 30, 30, 0.95);
+      color: #fff;
+      font-size: 13px;
+      line-height: 1.5;
+      pointer-events: none;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+    }
+    #card-tip.show { display: block; }
+    #card-tip .ct-title { font-weight: bold; margin-bottom: 4px; font-size: 14px; }
+    #card-tip .ct-desc { color: #e8e8e8; }
+
+    /* ===== 新手教程：全屏遮罩 + 分步说明 ===== */
+    #tutorial {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1500;
+      background: rgba(0, 0, 0, 0.45);
+      align-items: center;
+      justify-content: center;
+    }
+    #tutorial.show { display: flex; }
+    .tut-box {
+      width: 440px;
+      max-width: calc(100vw - 40px);
+      background: #fff;
+      border-radius: 12px;
+      padding: 22px 24px 16px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+    }
+    #tut-title { margin: 0 0 12px; font-size: 19px; color: #333; }
+    #tut-body { font-size: 14px; line-height: 1.75; color: #444; min-height: 96px; }
+    #tut-body b { color: #c0392b; }
+    #tut-body .tut-line { margin: 4px 0; }
+    .tut-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 16px;
+    }
+    #tut-step { font-size: 12px; color: #999; }
+    .tut-btns { display: flex; gap: 8px; }
+    .tut-btns button {
+      padding: 6px 16px;
+      font-size: 14px;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      background: #fff;
+      color: #333;
+      cursor: pointer;
+    }
+    #tut-next { background: #2ecc71; border-color: #2ecc71; color: #fff; }
+    #tut-next:hover { background: #27ae60; }
+    #tut-skip:hover { background: #f2f2f2; }
+  </style>
+</head>
+<body>
+
+  <!-- 页面标题栏：标题 + 撤回 / 重新开始 -->
+  <div id="topbar">
+    <h1>空当接龙战斗原型</h1>
+    <button id="tutorial-btn">教程</button>
+    <button id="undo">撤回</button>
+    <button id="restart">重新开始</button>
+  </div>
+
+  <!-- 战斗栏：玩家 / 敌人血量、回合信息、操作按钮 -->
+  <div id="battle">
+    <div class="side player">
+      <div class="side-name">冒险者</div>
+      <div class="hp-bar"><div class="hp-fill" id="player-hp-fill"></div></div>
+      <div class="hp-num" id="player-hp-num"></div>
+    </div>
+
+    <div class="center">
+      <div id="turn-label"></div>
+      <div id="telegraph"></div>
+      <div class="chips">
+        <span class="chip" id="growth-chip"></span>
+        <span class="chip" id="freeze-chip"></span>
+        <span class="chip toggle" id="force-chip"></span>
+        <span class="chip mana" id="inf-chip"></span>
+        <span class="chip warn" id="stuck-chip"></span>
+      </div>
+    </div>
+
+    <div class="side enemy">
+      <div class="side-name">污染体</div>
+      <div class="hp-bar"><div class="hp-fill" id="enemy-hp-fill"></div></div>
+      <div class="hp-num" id="enemy-hp-num"></div>
+    </div>
+
+    <div class="actions">
+      <button id="bag-btn">背包</button>
+      <button id="purify">净化</button>
+      <div id="moves"></div>
+      <button id="end-turn">结束回合</button>
+    </div>
+  </div>
+
+  <!-- 资源栏：魔力条 / 金币 / 防御，以及换蓝、加速、回溯、商店入口 -->
+  <div id="resbar">
+    <div class="res">
+      <span class="res-label">魔力</span>
+      <div class="mana-bar"><div class="mana-fill" id="mana-fill"></div></div>
+      <span class="res-num" id="mana-num"></span>
+    </div>
+    <span id="gold-num"></span>
+    <span id="defense-num"></span>
+    <span class="spacer"></span>
+    <button id="shop-btn">商店</button>
+    <button id="hp2mana">换蓝</button>
+    <button id="extra-move">加速</button>
+    <button id="rewind">回溯</button>
+  </div>
+
+  <!-- 战斗日志：最近 4 条，新的在上 -->
+  <div id="log"></div>
+
+  <!-- 操作提示：不符合规则时在这里显示一句提示 -->
+  <div id="tip"></div>
+
+  <!-- 通关提示：四个回收区都收到 K 时出现 -->
+  <div id="win">🎉 通关！四个回收区都收到 K 了</div>
+
+  <!-- 牌桌：8 列牌堆由 JS 动态生成 -->
+  <div id="table"></div>
+
+  <!-- 底部一排：左边 4 个回收区、右边 4 个调度槽，与上方 8 列一一对齐 -->
+  <div id="slots">
+    <div id="foundations"></div>
+    <div id="freecells"></div>
+  </div>
+
+  <!-- 背包：收纳从牌列里挖到的道具 -->
+  <div id="bag">
+    <h3>背包</h3>
+    <div id="bag-items"></div>
+    <div id="pick-actions"></div>
+  </div>
+
+  <!-- 商店：花金币直购大力移动 / 抽随机道具 -->
+  <div id="shop">
+    <h3>商店</h3>
+    <div id="shop-items"></div>
+  </div>
+
+  <!-- 拖动层：拖动中的牌临时搬到这里 -->
+  <div id="drag-layer"></div>
+
+  <!-- 长按牌时弹出的效果说明气泡 -->
+  <div id="card-tip"></div>
+
+  <!-- 新手教程：全屏遮罩，分步介绍基础玩法 -->
+  <div id="tutorial">
+    <div class="tut-box">
+      <h2 id="tut-title"></h2>
+      <div id="tut-body"></div>
+      <div class="tut-foot">
+        <span id="tut-step"></span>
+        <div class="tut-btns">
+          <button id="tut-skip">跳过</button>
+          <button id="tut-next">下一步</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ===== 基础数据 =====
+
+    // 花色定义：火🔥 / 雷⚡️ 属于“暖色组”，水💧 / 木🍃 属于“冷色组”。
+    // 标准空当接龙靠“红黑交替”搭牌，这里用“暖冷交替”来代替。
+    const SUITS = [
+      { name: "火", type: "fire",    symbol: "🔥", group: "warm" },
+      { name: "雷", type: "thunder", symbol: "⚡️", group: "warm" },
+      { name: "水", type: "water",   symbol: "💧", group: "cool" },
+      { name: "木", type: "wood",    symbol: "🍃", group: "cool" }
+    ];
+
+    // 点数：A 2~10 J Q K（数组下标就是点数大小，用于顺序判断）
+    const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
+
+    // ===== 战斗数值：可调参数集中在这里 =====
+    const CONFIG = {
+      playerMaxHp: 30,          // 玩家血量上限
+      enemyMaxHp: 100,          // 敌人血量上限（新增大量奖励道具后，相应提高难度）
+      enemyBaseAtk: 3,          // 敌人基础攻击力
+      atkGrowthEvery: 3,        // 每过 3 个回合，敌人攻击力 +1
+      undoCostMana: 1,          // 每次撤回消耗的魔力（原为献祭血量，现改为扣蓝）
+      foilRate: 0.14,           // 闪卡出现概率
+      lockTurns: 2,             // 锁牌持续回合数
+      freezeCellTurns: 2,       // 冻结调度槽持续回合数
+      refreshFreezeTurns: 2,    // 闪亮水牌 / 时间禁锢冰冻敌人的回合数
+      movesMin: 6,              // 每回合移动次数下限（随机浮动）
+      movesMax: 10,             // 每回合移动次数上限
+      comboCap: 6,              // 连击倍率最多叠到几层
+      comboBonusPer: 0.25,      // 每多一层连击，回收效果 +25%
+      taintBonus: 2,            // 回收被污染的牌时，额外加成（伤害/治疗/成长）
+      purifyCost: 1,            // 破局技·净化：每解开一处锁牌 / 冻结消耗的成长值
+
+      // ===== 魔力(蓝条) / 金币 / 防御 =====
+      manaMax: 15,              // 魔力上限
+      manaStart: 8,             // 开局魔力
+      manaRegen: 3,             // 每回合自动回魔
+      hpToMana: 2,              // 消耗 1 点血量换取的魔力（1 血 → 2 蓝）
+      extraMoveCost: 2,         // 消耗魔力换取 1 次本回合移动
+      rewindManaCost: 10,       // 回溯到本回合开始的魔力消耗
+      rewindGrowthCost: 1,      // 回溯额外消耗的成长值
+      goldPerKill: 10,          // 击败污染体的金币奖励
+      goldStart: 50,            // 开局初始金币（前期容易死锁，留够买道具破局的钱）
+      goldLuckyFrom: 9,         // 「发」：某花色收到 8 之后，第 9 张起每张回收额外加金
+      goldLuckyBonus: 1,        // 「发」的额外金币数（每套花色最多 +5）
+      shopForceCost: 5,         // 商店直购「大力移动」的金币价格
+      drawCost: 5,              // 抽一次随机道具的金币价格
+      defenseMax: 10,           // 防御上限（受击先扣防御）
+      infiniteSeconds: 30,      // 「无限移动」道具的持续秒数
+      openingInfiniteSeconds: 120, // 正式开局先手福利：开局的无限移动持续秒数
+      runRewardPerTurn: 1,      // 每回合最多触发几次「连出顺子」奖励（防来回搬运刷道具）
+      shieldValue: 6,           // 护盾符立即获得的防御点数
+
+      // ===== 条件奖励道具：达成条件即赠送，阈值集中在这里 =====
+      buriedItems: 5,             // 埋在牌列里的道具牌总数（全部挖出 → 补给箱）
+      comboRewardAt: 5,           // 一回合内连击达到几次 → 时间暂停
+      perfectTurns: 10,           // 走满多少回合且一次没撤回 → 完美主义
+      chargeMovesLeft: 8,         // 主动结束回合时剩余步数 ≥ 多少 → 蓄力
+      emptyCellsReward: 4,        // 同时空置的调度槽数量 → 龙卷风
+      snipeDamage: 10,            // 定点狙击的直接伤害
+      perfectGold: 15,            // 完美主义的额外金币
+      supplyDraw: 2,              // 补给箱抽取的随机道具数量
+      chargeMoveBonus: 3,         // 蓄力：下回合移动次数加成
+
+      // 敌人污染手段与权重。都只做“可恢复、牌面总量守恒”的干扰，避免出现死局。
+      pollutionWeights: [
+        { kind: "lock",       w: 35 },   // 锁住一张牌
+        { kind: "suitSwap",   w: 25 },   // 两张牌互换花色
+        { kind: "rankSwap",   w: 25 },   // 同花色两张牌互换点数
+        { kind: "freezeCell", w: 15 }    // 冻结一个空调度槽
+      ]
+    };
+
+    // 保命道具：夹在牌列里，挖到最上面后点击即可收进背包
+    const ITEM_TYPES = [
+      { id: "potion",    name: "治疗药剂", icon: "🧪", heal: 8, desc: "回复 8 点血量" },
+      { id: "hourglass", name: "时间禁锢", icon: "⏳", desc: "冰冻敌人 2 回合" },
+      { id: "key",       name: "万能钥匙", icon: "🗝", desc: "解除全部锁定与冻结" },
+      { id: "cell",      name: "临时调度槽", icon: "🔄", desc: "获得一个额外的调度槽，不影响可移动牌数" },
+      { id: "force",     name: "大力移动", icon: "💪", desc: "获得 1 层充能，点状态标签启用后整组移动无视上限" },
+      { id: "mana",      name: "回蓝药剂", icon: "🧿", mana: 4, desc: "回复 4 点魔力" },
+      { id: "swap",      name: "任意交换", icon: "🔁", desc: "点选场上任意两张牌，交换它们的位置" },
+      { id: "infmove",   name: "无限移动", icon: "♾", desc: "开启后 30 秒内落位不消耗移动次数" },
+      { id: "drop",      name: "强制降落", icon: "🪂", desc: "把任意一张牌（含被压住的）强行送进空闲调度槽" },
+      { id: "shield",    name: "护盾符", icon: "🛡", desc: "立即获得 6 点防御" },
+      { id: "foresee",   name: "预知", icon: "🎲", desc: "重掷敌人下回合的污染预告" },
+
+      // ===== 条件奖励道具：只能靠达成条件获得，不会随机埋进牌列、也不会被抽卡抽到 =====
+      { id: "shuffle",   name: "洗牌",     icon: "🧹", rare: true, desc: "把牌列里剩余未回收的牌重新洗一遍并重发" },
+      { id: "timepause", name: "时间暂停", icon: "⏱", rare: true, desc: "敌人下一次行动被跳过" },
+      { id: "snipe",     name: "定点狙击", icon: "🎯", rare: true, desc: "直接对敌人造成 " + CONFIG.snipeDamage + " 点伤害" },
+      { id: "tornado",   name: "龙卷风",   icon: "🌪", rare: true, desc: "把某张牌及其下方的整摞牌搬到另一列，无视移动上限" },
+      { id: "perfect",   name: "完美主义", icon: "💎", rare: true, desc: "立即获得 " + CONFIG.perfectGold + " 金币" },
+      { id: "supply",    name: "补给箱",   icon: "📦", rare: true, desc: "立刻再抽 " + CONFIG.supplyDraw + " 件随机道具" },
+      { id: "charge",    name: "蓄力",     icon: "⏳", rare: true, desc: "下回合移动次数 +" + CONFIG.chargeMoveBonus }
+    ];
+
+    // 战斗状态
+    const battle = {
+      playerHp: 0,
+      enemyHp: 0,
+      turn: 1,
+      movesLeft: 0,       // 本回合剩余移动次数，用完自动进入下一回合
+      nextMoves: 0,       // 已预告的下一回合移动次数
+      combo: 0,           // 连续回收的连击数，非回收移动 / 回合结束 / 撤回都会清零
+      forceCharge: 0,     // 大力移动充能层数（拾取/使用道具获得，主动启用后消耗）
+      forceActive: false, // 大力移动是否已启用（启用时整组移动无视上限）
+      growth: 0,          // 🍃 成长层数：永久提升之后所有回收效果
+      freezeTurns: 0,     // 敌人被冰冻的剩余回合
+      paralyze: false,    // 敌人下次攻击减半（⚡️ 回收效果）
+      pending: null,      // 已预告、下个敌人回合兑现的污染
+      bag: [],            // 背包里的道具
+      mana: 0,            // 蓝条：魔力值
+      gold: 0,            // 金币
+      defense: 0,         // 防御值：敌人攻击先扣防御
+      infiniteUntil: 0,   // 「无限移动」的截止时间戳（毫秒），0 表示未开启
+      kRewarded: {},      // 已经发过奖励的 K 牌 id（防止把同一张 K 来回搬运刷道具）
+      growthCards: {},    // 已经产出过成长的木牌 id（回溯后不重复获取成长）
+      runRewardTurn: -1,  // 「连出顺子」奖励发生在第几回合
+      runRewardCount: 0,  // 本回合已触发「连出顺子」奖励的次数
+      aRewarded: false,   // 四花色 A 是否已发过「强制降落」奖励
+      luckyAnnounced: {}, // 已公布过「收到 8（发）」加金规则的花色（撤回重收不重复播报）
+      rewards: {},        // 已发放过的条件奖励道具 id（每件每局只发一次）
+      usedUndo: false,    // 本局是否用过撤回（「完美主义」的条件）
+      timePause: false,   // 「时间暂停」：敌人下一次行动被跳过
+      movesBonus: 0,      // 「蓄力」：下回合移动次数加成，结算后清零
+      cellsUsed: false,   // 调度槽是否被占用过（避免开局四个空槽就误触发「龙卷风」）
+      over: false
+    };
+
+    // ===== 保证可解的牌局种子 =====
+    // 下面每个种子对应的牌局，都已经用求解器实际求解过（真的解出来了），
+    // 再用同一套伪随机算法在网页里重现，所以随机抽到的每一局都保证可解。
+    const SOLVABLE_SEEDS = [
+      1062577070, 174635430, 1447464255, 615438352,
+      1969603464, 619966367, 1094840044, 423357887,
+      1681396084, 500779186, 1126854607, 1845618528,
+      1622784937
+    ];
+
+    // ===== 伪随机数：线性同余（LCG），同一 seed 必然得到同一副牌 =====
+    let rngState = 0;
+    function nextInt(n) {
+      rngState = (rngState * 1664525 + 1013904223) >>> 0;  // 32 位无符号回绕
+      return rngState % n;
+    }
+
+    // ===== 规则：点数下标 / 暖冷分组 =====
+    function rankIndex(el) { return RANKS.indexOf(el.dataset.rank); }
+    function groupOf(el) { return el.dataset.group; }
+
+    // 这一组牌是不是合法的连续牌序：从上往下点数依次减 1，且暖冷交替。
+    // 排序不符合的一组无法移动，用的就是这个判断。
+    function isValidRun(cards) {
+      for (let i = 0; i < cards.length - 1; i++) {
+        if (rankIndex(cards[i]) !== rankIndex(cards[i + 1]) + 1) return false; // 点数必须递减 1
+        if (groupOf(cards[i]) === groupOf(cards[i + 1])) return false;         // 暖冷必须交替
+      }
+      return true;
+    }
+
+    // 一张牌能不能压到目标牌上（目标为空 → 什么牌都能放）
+    function canStackOn(cardEl, targetEl) {
+      if (!targetEl) return true;                                       // 空列
+      if (targetEl.classList.contains("item")) return false;            // 道具牌不能当底座
+      if (targetEl.classList.contains("locked")) return false;          // 被污染锁住的牌不能接牌
+      if (rankIndex(cardEl) !== rankIndex(targetEl) - 1) return false;   // 点数要正好小 1
+      return groupOf(cardEl) !== groupOf(targetEl);                      // 暖冷要交替
+    }
+
+    // 计算某个回收区下一张应该收的点数：空区从 A 开始，之后依次往后推
+    function nextRank(foundation) {
+      if (!foundation.dataset.top) return RANKS[0];          // 空区 → 应该收 A
+      const i = RANKS.indexOf(foundation.dataset.top);
+      return i + 1 < RANKS.length ? RANKS[i + 1] : null;     // 已收到 K → 没有下一张
+    }
+
+    // 判断一张牌能否回收进某个回收区：花色要一致，点数要正好接在最大点数后面
+    function canRecycle(foundation, cardEl) {
+      if (cardEl.dataset.suit !== foundation.dataset.suit) return false; // 花色不匹配
+      return cardEl.dataset.rank === nextRank(foundation);               // 点数必须接得上
+    }
+
+    // ===== 调度槽 / 整组移动的上限 =====
+
+    // 统计还有几个空闲的调度槽
+    function emptyFreeCellCount() {
+      let n = 0;
+      document.querySelectorAll(".freecell").forEach(function (cell) {
+        if (cell.classList.contains("temp")) return;     // 临时槽不计入移动上限
+        if (cell.dataset.frozen) return;                 // 被冻结的槽不能用来周转
+        if (!cell.querySelector(".card")) n++;
+      });
+      return n;
+    }
+
+    // 统计空列数量（目标列本身就是空的，不算作可周转的空列）
+    function emptyColumnCount(excludeColumn) {
+      let n = 0;
+      document.querySelectorAll(".column").forEach(function (col) {
+        if (col === excludeColumn) return;            // 目标列不计入
+        if (col.children.length === 0) n++;
+      });
+      return n;
+    }
+
+    // 标准空当接龙的整组移动上限：(空闲调度槽数 + 1) × 2^空列数
+    function maxMovableCount(excludeColumn) {
+      return (emptyFreeCellCount() + 1) * Math.pow(2, emptyColumnCount(excludeColumn));
+    }
+
+    // ===== 取一组牌 / 能否拿起 =====
+
+    // 从这张牌开始，把它和它同列下方的所有牌取出来（调度槽里的牌只有自己）
+    function getRun(el) {
+      const run = [el];
+      if (!el.parentElement.classList.contains("column")) return run;
+      let next = el.nextElementSibling;
+      while (next && next.classList.contains("card")) {
+        run.push(next);
+        next = next.nextElementSibling;
+      }
+      return run;
+    }
+
+    // 能否拿起这张牌：回收区的牌不能动；列里的牌必须和它下方的牌构成合法牌序；
+    // 调度槽里的牌随便拿。排序不符合的一组无法移动，无法移动的牌也无法点击。
+    function canPickUp(el) {
+      if (battle.over) return false;                                // 战斗结束就不能再动牌
+      if (el.classList.contains("item")) return false;              // 道具牌靠点击收取，不参与拖动
+      if (el.classList.contains("locked")) return false;            // 被污染锁住的牌不能移动
+      if (el.closest(".foundation")) return false;
+      if (el.parentElement.classList.contains("freecell")) return true;
+      return isValidRun(getRun(el));
+    }
+
+    // 刷新所有牌的可移动标记（决定鼠标手势，也决定能不能被点/拖）
+    function refreshMovable() {
+      document.querySelectorAll(".card").forEach(function (el) {
+        el.classList.toggle("movable", canPickUp(el));
+        if (el.classList.contains("item")) {
+          // 只有露在最上面的道具牌才可以点击收取
+          const top = el.parentElement && el === el.parentElement.lastElementChild;
+          el.classList.toggle("collectible", !!top && !battle.over);
+        }
+      });
+      adjustColumnSpacing();
+      updateUndoButton();
+    }
+
+    // ===== 牌列压缩：牌太多时缩短每张露出的高度，一列就不会长得离谱 =====
+    const CARD_H = 112;                                              // 与 CSS 里 .card 的高度一致
+    const STACK_VISIBLE = 28;                                        // 默认每张露出 28px
+    const MIN_VISIBLE = 20;                                          // 压到最紧也要露出 20px，点数才看得清
+    const COLUMN_MAX_H = CARD_H + (RANKS.length - 1) * MIN_VISIBLE;  // 满列 13 张时的目标高度
+
+    function adjustColumnSpacing() {
+      document.querySelectorAll(".column").forEach(function (col) {
+        const cards = Array.prototype.filter.call(col.children, function (c) {
+          return c.classList.contains("card");
+        });
+        const n = cards.length;
+        let visible = STACK_VISIBLE;
+        if (n > 1) {
+          // 想让整列不超过 COLUMN_MAX_H，每张最多能露出多少
+          const fit = Math.floor((COLUMN_MAX_H - CARD_H) / (n - 1));
+          visible = Math.max(MIN_VISIBLE, Math.min(STACK_VISIBLE, fit));
+        }
+        cards.forEach(function (c, i) {
+          // 最上面那张不动，其余每张都往上挤一点
+          c.style.marginBottom = (i === n - 1) ? "0px" : (-(CARD_H - visible)) + "px";
+        });
+      });
+
+      // 不在牌列里的牌（调度槽 / 回收区 / 拖动层）清掉列内联边距，交回 CSS 控制
+      document.querySelectorAll("#freecells .card, #foundations .card, #drag-layer .card")
+        .forEach(function (c) { c.style.marginBottom = ""; });
+    }
+
+    // ===== 计算可以放置的位置 =====
+
+    // 这一组牌现在能放到哪些位置。originColumn / originCell 是它原来所在的位置，
+    // 拖回原处等于没动，所以直接排除掉。
+    function validTargets(run, originColumn, originCell) {
+      const head = run[0];
+      const targets = [];
+
+      // 牌列：压得住、且不超过整组移动上限（大力移动生效时可无视上限）
+      document.querySelectorAll(".column").forEach(function (col) {
+        if (col === originColumn) return;
+        if (!canStackOn(head, col.lastElementChild)) return;
+        const needForce = run.length > maxMovableCount(col);
+        if (needForce && !battle.forceActive) return;        // 需要大力移动但没启用 → 不能放
+        targets.push({ el: col, kind: "column", needsForce: needForce });
+      });
+
+      // 调度槽与回收区都只收单张牌
+      if (run.length === 1) {
+        document.querySelectorAll(".freecell").forEach(function (cell) {
+          if (cell === originCell) return;
+          if (cell.classList.contains("temp") && cell.classList.contains("hidden")) return; // 隐藏的临时槽不可落牌
+          if (cell.dataset.frozen) return;               // 被冻结的调度槽不能用
+          if (cell.querySelector(".card")) return;       // 槽已被占用
+          targets.push({ el: cell, kind: "freecell" });
+        });
+
+        document.querySelectorAll(".foundation").forEach(function (f) {
+          if (canRecycle(f, head)) targets.push({ el: f, kind: "foundation" });
+        });
+      }
+
+      return targets;
+    }
+
+    // 吸附范围：指针离目标方框多近算"吸上去"
+    const SNAP_DIST = 70;
+    function findSnapTarget(targets, x, y) {
+      let best = null;
+      let bestDist = Infinity;
+      targets.forEach(function (t) {
+        const r = t.el.getBoundingClientRect();
+        // 指针到矩形边缘的距离（在矩形内部则为 0）
+        const dx = Math.max(r.left - x, 0, x - r.right);
+        const dy = Math.max(r.top - y, 0, y - r.bottom);
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < bestDist) { bestDist = d; best = t; }
+      });
+      return bestDist <= SNAP_DIST ? best : null;
+    }
+
+    // ===== 落位 =====
+
+    // ===== 「发」：某花色收到 8（谐音「发」）之后，该花色每张回收额外加金 =====
+    // 回收必须严格 A→K 顺序，所以“能收回 9”本身就说明 8 已收，
+    // 加金判定简化成“点数 ≥ goldLuckyFrom”即可；下面只负责「解锁阈值 + 提示」。
+    const LUCKY_UNLOCK_INDEX = RANKS.indexOf("8");        // 回收区顶牌到 8 即解锁
+
+    function luckyUnlocked(foundationEl) {
+      const top = foundationEl.dataset.top;
+      return !!top && RANKS.indexOf(top) >= LUCKY_UNLOCK_INDEX;
+    }
+
+    // 回收区下方的「最大：X」标签，解锁后追加「· 发」
+    function updateFoundationLabel(foundationEl) {
+      const label = foundationEl.nextElementSibling;
+      if (!label) return;
+      const on = luckyUnlocked(foundationEl);
+      label.textContent = "最大：" + (foundationEl.dataset.top || "—") + (on ? " · 发" : "");
+      label.classList.toggle("lucky", on);
+    }
+
+    // 某个花色第一次收到 8 时公布一次规则（撤回重收不重复）
+    function announceLucky(foundationEl) {
+      const suit = foundationEl.dataset.suit;
+      if (!luckyUnlocked(foundationEl) || battle.luckyAnnounced[suit]) return;
+      battle.luckyAnnounced[suit] = true;
+      const s = SUITS.find(function (x) { return x.type === suit; });
+      const sym = s ? s.symbol : "花色";
+      log("🍀 " + sym + " 收到 8（发）！此后该花色每张回收额外 +" + CONFIG.goldLuckyBonus + " 金币");
+      showTip("🍀 " + sym + " 收到 8（发）：该花色后续每张回收额外 +" + CONFIG.goldLuckyBonus + " 金币");
+    }
+
+    // 把这一组牌放进目标位置
+    function placeRun(run, target) {
+      if (target.kind === "foundation") {
+        target.el.appendChild(run[0]);                    // 回收区一次只收一张
+        target.el.dataset.top = run[0].dataset.rank;      // 记录已收到的最大点数
+        updateFoundationLabel(target.el);                 // 更新「最大：X」，解锁后带「· 发」
+        announceLucky(target.el);                         // 收到 8 时公布加金规则
+        battle.combo++;                                   // 连续回收累积连击
+        applyRecycleEffect(run[0]);                       // 回收触发花色效果（伤害 / 治疗 / 成长 / 金币）
+        delete run[0].dataset.taint;                      // 被污染的牌已净化，清除标记
+        run[0].classList.remove("tainted");
+        maybeGrantAceReward();                            // 四花色 A 全部回收的奖励
+      } else {
+        if (target.el.classList.contains("temp")) target.el.dataset.used = "1";  // 临时槽被占用过
+        run.forEach(function (c) { target.el.appendChild(c); });  // 按顺序整组搬过去
+        battle.combo = 0;                                 // 非回收移动打断连击
+        if (target.kind === "column") {
+          maybeGrantKingReward(target.el);                // K 被放到空列顶端的奖励
+          maybeGrantRunReward(run);                       // 连出顺子的奖励
+        }
+      }
+      syncTempCells();
+      checkRewards();                                     // 落位后检查「条件 → 道具」的奖励
+    }
+
+    // ===== 道具获取机制：三种玩法各奖励一件道具 =====
+
+    // 往背包里塞一件道具
+    function grantItem(id) {
+      const t = ITEM_TYPES.find(function (x) { return x.id === id; });
+      if (!t) return null;
+      battle.bag.push(t);
+      renderBag();
+      return t;
+    }
+
+    // ① 成功连出一个顺子（整组 ≥2 张一起落位）→ 任意交换道具。
+    //    每回合最多触发 1 次，避免把同一组牌来回搬运刷道具。
+    function maybeGrantRunReward(run) {
+      if (run.length < 2) return;
+      if (battle.runRewardTurn !== battle.turn) {
+        battle.runRewardTurn = battle.turn;
+        battle.runRewardCount = 0;
+      }
+      if (battle.runRewardCount >= CONFIG.runRewardPerTurn) return;
+      battle.runRewardCount++;
+      const t = grantItem("swap");
+      if (t) log("🎁 成功连出 " + run.length + " 张顺子：获得道具 " + t.icon + " " + t.name);
+    }
+
+    // ② 把 K 放到腾出来的空列顶端 → 无限移动道具（同一张 K 只奖励一次）
+    function maybeGrantKingReward(col) {
+      const top = col.lastElementChild;
+      if (!top || top.dataset.rank !== "K") return;
+      if (battle.kRewarded[top.dataset.id]) return;
+      battle.kRewarded[top.dataset.id] = true;
+      const t = grantItem("infmove");
+      if (t) log("🎁 K 已被放到空列顶端：获得道具 " + t.icon + " " + t.name);
+    }
+
+    // ③ 四个花色的 A 全部回收 → 强制降落道具（整局只发一次）
+    function maybeGrantAceReward() {
+      if (battle.aRewarded) return;
+      const all = Array.prototype.every.call(
+        document.querySelectorAll(".foundation"),
+        function (f) { return !!f.dataset.top; }   // 回收区从 A 开始收，收到过牌就说明它的 A 已回收
+      );
+      if (!all) return;
+      battle.aRewarded = true;
+      const t = grantItem("drop");
+      if (t) log("🎁 四花色 A 全部回收：获得道具 " + t.icon + " " + t.name);
+    }
+
+    // ===== 条件奖励道具：达成条件就送一件强力道具（每件每局只发一次） =====
+    // 发奖统一走这里：记标记 → 进背包 → 播报，避免重复触发。
+    function grantReward(rewardId, why) {
+      if (battle.rewards[rewardId]) return false;
+      const t = ITEM_TYPES.find(function (x) { return x.id === rewardId; });
+      if (!t) return false;
+      battle.rewards[rewardId] = true;
+      battle.bag.push(t);
+      log("🏅 达成条件「" + why + "」：获得道具 " + t.icon + " " + t.name);
+      showTip("🏅 " + why + "：获得道具 " + t.icon + " " + t.name);
+      renderBag();
+      return true;
+    }
+
+    // 集中检查所有“条件 → 道具”的触发点。幂等、可重复调用。
+    function checkRewards() {
+      // ① 清空一整列 → 🧹 洗牌
+      if (!battle.rewards.shuffle) {
+        const emptied = Array.prototype.some.call(
+          document.querySelectorAll(".column"),
+          function (col) { return col.children.length === 0; }
+        );
+        if (emptied) grantReward("shuffle", "清空了一整列");
+      }
+
+      // ② 一回合内连击达到阈值 → ⏱ 时间暂停
+      if (battle.combo >= CONFIG.comboRewardAt) {
+        grantReward("timepause", "一回合连击 ×" + battle.combo);
+      }
+
+      // ③ 某个点数的 4 张全部回收 → 🎯 定点狙击
+      if (!battle.rewards.snipe) {
+        const rankDone = RANKS.some(function (rank) {
+          const idx = RANKS.indexOf(rank);
+          let n = 0;
+          document.querySelectorAll(".foundation").forEach(function (f) {
+            if (f.dataset.top && RANKS.indexOf(f.dataset.top) >= idx) n++;
+          });
+          return n === 4;
+        });
+        if (rankDone) grantReward("snipe", "某个点数的 4 张全部回收");
+      }
+
+      // ④ 同时空出 4 个调度槽 → 🌪 龙卷风（必须先占用过，避免开局就白送）
+      if (!battle.rewards.tornado) {
+        let empty = 0;
+        document.querySelectorAll(".freecell").forEach(function (c) {
+          if (c.classList.contains("temp")) return;   // 临时槽不算
+          if (c.dataset.frozen) return;               // 冻结的槽不算
+          if (c.querySelector(".card")) battle.cellsUsed = true;
+          else empty++;
+        });
+        if (battle.cellsUsed && empty >= CONFIG.emptyCellsReward) {
+          grantReward("tornado", "同时空出 " + CONFIG.emptyCellsReward + " 个调度槽");
+        }
+      }
+    }
+
+    // 临时调度槽状态收敛：占用时保持可见；被占用过又清空（用完）→ 消失
+    function syncTempCells() {
+      document.querySelectorAll(".freecell.temp").forEach(function (cell) {
+        if (cell.querySelector(".card")) {
+          cell.classList.remove("hidden");       // 有牌就必须可见
+        } else if (cell.dataset.used) {
+          cell.classList.add("hidden");          // 用过又清空 → 缩回去
+          delete cell.dataset.used;
+        }
+        // 否则是刚召唤、还没用的空槽，保持可见
+      });
+    }
+
+    // 大力移动：启用后，只有真正“突破上限”的那一次落位才消耗充能
+    function consumeForceCharge() {
+      battle.forceActive = false;
+      battle.forceCharge = Math.max(0, battle.forceCharge - 1);
+      log("💪 大力移动已用出" + (battle.forceCharge > 0 ? "（剩余 " + battle.forceCharge + " 层充能）" : ""));
+    }
+
+    // 点击「大力移动」状态标签，主动启用 / 取消
+    function toggleForce() {
+      if (battle.over || battle.forceCharge <= 0) return;
+      battle.forceActive = !battle.forceActive;
+      if (battle.forceActive) showTip("大力移动已启用：本次整组移动无视上限");
+      renderBattle();
+    }
+
+    // ===== 存档 / 撤回（无限撤回） =====
+
+    // cardById：张牌的唯一编号 → 牌元素，撤回时按编号把牌摆回去
+    let cardById = {};
+    let history = [];          // 每做一步就把"这步之前"的完整局面存进来，不设上限
+
+    // 把当前局面序列化成 {列、调度槽、回收区} 里各自的牌编号
+    function serialize() {
+      return {
+        cols: Array.prototype.map.call(document.querySelectorAll(".column"), function (col) {
+          return Array.prototype.map.call(col.children, function (c) { return c.dataset.id; });
+        }),
+        cells: Array.prototype.map.call(document.querySelectorAll(".freecell"), function (cell) {
+          const c = cell.querySelector(".card");
+          return c ? c.dataset.id : null;
+        }),
+        founds: Array.prototype.map.call(document.querySelectorAll(".foundation"), function (f) {
+          return Array.prototype.map.call(f.children, function (c) { return c.dataset.id; });
+        }),
+        temp: (function () {
+          const t = document.querySelector(".freecell.temp");
+          const c = t ? t.querySelector(".card") : null;
+          return {
+            id: c ? c.dataset.id : null,
+            hidden: t ? t.classList.contains("hidden") : true,
+            used: !!(t && t.dataset.used)
+          };
+        })()
+      };
+    }
+
+    // 某张牌编号是否出现在这份存档的任意位置上
+    function snapshotHasCard(snap, id) {
+      const hit = function (list) { return list.indexOf(id) !== -1; };
+      if (snap.cols.some(hit)) return true;
+      if (snap.cells.indexOf(id) !== -1) return true;
+      if (snap.founds.some(hit)) return true;
+      if (snap.temp && snap.temp.id === id) return true;
+      return false;
+    }
+
+    // 按存档把局面摆回来。untakeItems 为真时（回溯用），会把本回合中途
+    // 收进背包、但快照里其实还在牌桌上的道具牌重新放回牌桌。
+    function restore(snap, untakeItems) {
+      if (untakeItems) {
+        document.querySelectorAll(".card.item").forEach(function (el) {
+          if (el.dataset.taken === "1" && snapshotHasCard(snap, el.dataset.id)) {
+            delete el.dataset.taken;
+          }
+        });
+      }
+      const cols = document.querySelectorAll(".column");
+      const cells = document.querySelectorAll(".freecell");
+      const founds = document.querySelectorAll(".foundation");
+
+      snap.cols.forEach(function (ids, i) {
+        ids.forEach(function (id) {
+          const el = cardById[id];
+          if (!el || el.dataset.taken === "1") return;   // 已收进背包的道具牌不再摆回牌桌
+          cols[i].appendChild(el);
+        });
+      });
+      snap.cells.forEach(function (id, i) {
+        if (id) cells[i].appendChild(cardById[id]);
+      });
+      snap.founds.forEach(function (ids, i) {
+        ids.forEach(function (id) { founds[i].appendChild(cardById[id]); });
+        const top = ids.length ? cardById[ids[ids.length - 1]].dataset.rank : "";
+        founds[i].dataset.top = top;                      // 恢复回收进度
+        updateFoundationLabel(founds[i]);                 // 同步「最大：X · 发」标签
+      });
+
+      // 恢复临时调度槽的显隐 / 使用状态
+      if (snap.temp) {
+        const t = document.querySelector(".freecell.temp");
+        if (t) {
+          t.classList.toggle("hidden", !!snap.temp.hidden);
+          if (snap.temp.used) t.dataset.used = "1"; else delete t.dataset.used;
+        }
+      }
+    }
+
+    function updateUndoButton() {
+      const btn = document.getElementById("undo");
+      btn.disabled = battle.over || history.length === 0 || battle.mana < CONFIG.undoCostMana;
+    }
+
+    // 撤回要回滚的战斗数值：回收会改血量 / 敌人血量 / 金币 / 防御 / 冰冻 / 麻痹，
+    // 如果只还原牌桌而不还原这些数值，就能靠“回收→撤回→再回收”反复刷金币与伤害。
+    // 成长值(🍃)与各类奖励标记沿用和「回溯」一致的处理：不回滚，靠“已领取”标记防止重复获取。
+    function captureCombatState() {
+      return {
+        playerHp: battle.playerHp,
+        enemyHp: battle.enemyHp,
+        gold: battle.gold,
+        defense: battle.defense,
+        freezeTurns: battle.freezeTurns,
+        paralyze: battle.paralyze
+      };
+    }
+
+    function restoreCombatState(s) {
+      battle.playerHp = s.playerHp;
+      battle.enemyHp = s.enemyHp;
+      battle.gold = s.gold;
+      battle.defense = s.defense;
+      battle.freezeTurns = s.freezeTurns;
+      battle.paralyze = s.paralyze;
+    }
+
+    // 撤回一步：无限次，但每次都要消耗魔力（原为献祭血量）
+    function undo() {
+      if (battle.over || !history.length) return;
+      if (battle.mana < CONFIG.undoCostMana) {
+        showTip("魔力不足，无法再撤回（撤回需要 " + CONFIG.undoCostMana + " 点魔力）");
+        return;
+      }
+      const entry = history.pop();
+      restore(entry.snap);                   // 先还原牌桌
+      restoreCombatState(entry.state);       // 再还原血 / 金 / 防御等数值，堵住反复刷取的漏洞
+      if (entry.refund) battle.bag.push(entry.refund);   // 归还这步真正消耗掉的道具（更换 / 降落）
+      battle.mana -= CONFIG.undoCostMana;
+      battle.movesLeft += 1;                 // 撤回返还这步消耗的移动次数
+      battle.combo = 0;                      // 撤回打断连击
+      battle.usedUndo = true;                // 「完美主义」要求本局一次不撤回
+      log("↩️ 撤回消耗 " + CONFIG.undoCostMana + " 点魔力（剩余 " + battle.mana + "）"
+        + (entry.refund ? "，并归还了道具 " + entry.refund.icon + entry.refund.name : ""));
+      refreshMovable();
+      renderBattle();
+      checkWin();
+    }
+
+    // ===== 回溯：回滚到本回合刚开始时的局面 =====
+    let turnStartSnapshot = null;            // 每个回合开始时存一份，供「回溯」使用
+
+    function captureTurnStart() {
+      turnStartSnapshot = {
+        snap: serialize(),                   // 牌桌上的牌
+        playerHp: battle.playerHp,
+        enemyHp: battle.enemyHp,
+        gold: battle.gold,
+        defense: battle.defense,
+        movesLeft: battle.movesLeft,
+        turn: battle.turn,
+        combo: battle.combo,
+        freezeTurns: battle.freezeTurns,
+        paralyze: battle.paralyze,
+        pending: battle.pending,
+        bag: battle.bag.slice()
+      };
+    }
+
+    // 消耗 10 魔力 + 1 成长，回到本回合开始（成长值不回滚，也不会重复获取）
+    function rewindTurn() {
+      if (battle.over || !turnStartSnapshot) return;
+      if (battle.mana < CONFIG.rewindManaCost) {
+        showTip("魔力不足，回溯需要 " + CONFIG.rewindManaCost + " 点魔力");
+        return;
+      }
+      if (battle.growth < CONFIG.rewindGrowthCost) {
+        showTip("成长值不足，回溯需要 " + CONFIG.rewindGrowthCost + " 点成长");
+        return;
+      }
+
+      const s = turnStartSnapshot;
+      battle.mana -= CONFIG.rewindManaCost;         // 魔力不恢复，直接扣掉，避免"花了再回滚"白嫖
+      battle.growth = Math.max(0, battle.growth - CONFIG.rewindGrowthCost);
+
+      restore(s.snap, true);                        // true：把本回合中途收进背包的道具牌放回牌桌
+      battle.playerHp = s.playerHp;
+      battle.enemyHp = s.enemyHp;
+      battle.gold = s.gold;
+      battle.defense = s.defense;
+      battle.movesLeft = s.movesLeft;
+      battle.turn = s.turn;
+      battle.combo = s.combo;
+      battle.freezeTurns = s.freezeTurns;
+      battle.paralyze = s.paralyze;
+      battle.pending = s.pending;
+      battle.bag = s.bag.slice();
+      history = [];                                 // 回合重来，撤回栈清空
+
+      if (pickMode) endPick();
+      log("⏪ 回溯：回到第 " + battle.turn + " 回合开始（-" + CONFIG.rewindManaCost + " 魔力 -" +
+          CONFIG.rewindGrowthCost + " 成长）");
+      refreshMovable();
+      renderBattle();
+      checkWin();
+    }
+
+    // ===== 提示 =====
+
+    // 短暂显示一句操作提示（默认 1.6 秒后自动消失）
+    let tipTimer = null;
+    function showTip(msg) {
+      const tip = document.getElementById("tip");
+      tip.textContent = msg;
+      tip.classList.add("show");
+      clearTimeout(tipTimer);                      // 连续提示时重新计时
+      tipTimer = setTimeout(function () {
+        tip.classList.remove("show");
+      }, 1600);
+    }
+
+    // ===== 战斗逻辑 =====
+
+    function suitByType(type) {
+      return SUITS.find(function (s) { return s.type === type; });
+    }
+
+    // 牌的中文名，例如“火7”，用于日志与预告
+    function cardName(el) {
+      const suit = suitByType(el.dataset.suit);
+      return (suit ? suit.name : "?") + el.dataset.rank;
+    }
+
+    // 战斗日志：固定显示最近 4 条，新的插在最上面
+    const MAX_LOG = 4;
+    let logLines = [];
+    function log(msg) {
+      logLines.unshift(msg);
+      if (logLines.length > MAX_LOG) logLines.length = MAX_LOG;
+      document.getElementById("log").innerHTML = logLines.map(function (t) {
+        return "<div>" + t + "</div>";
+      }).join("");
+    }
+
+    // ===== 血量结算 =====
+    function damageEnemy(n) {
+      if (battle.over) return;
+      battle.enemyHp = Math.max(0, battle.enemyHp - n);
+      if (battle.enemyHp === 0) {
+        gainGold(CONFIG.goldPerKill);                     // 击败污染体的金币奖励
+        endBattle(true, "🎉 击败污染体，战斗胜利！");
+      }
+    }
+
+    function healPlayer(n) {
+      battle.playerHp = Math.min(CONFIG.playerMaxHp, battle.playerHp + n);
+    }
+
+    // 玩家受到伤害：先扣防御，剩下的才扣血，返回本次的明细
+    function damagePlayer(n) {
+      const blocked = Math.min(battle.defense, n);
+      battle.defense -= blocked;
+      const real = n - blocked;
+      battle.playerHp = Math.max(0, battle.playerHp - real);
+      return { blocked: blocked, real: real };
+    }
+
+    // ===== 魔力 / 金币 / 防御 =====
+    function gainMana(n) { battle.mana = Math.min(CONFIG.manaMax, battle.mana + n); }
+    function gainGold(n) { battle.gold += n; }
+    function gainDefense(n) { battle.defense = Math.min(CONFIG.defenseMax, battle.defense + n); }
+
+    // 下一次敌人回合会打出多少攻击（提前显示在战斗栏里）
+    function nextAttackValue() {
+      let atk = CONFIG.enemyBaseAtk + Math.floor((battle.turn - 1) / CONFIG.atkGrowthEvery);
+      if (battle.paralyze) atk = Math.floor(atk / 2);   // ⚡️ 回收效果：攻击减半
+      return atk;
+    }
+
+    // 摇出某一回合的移动次数（随机浮动，敌人提前预告）
+    function rollMoves() {
+      return CONFIG.movesMin + nextInt(CONFIG.movesMax - CONFIG.movesMin + 1);
+    }
+
+    // 成功落位消耗 1 步；步数用完自动进入下一回合
+    function consumeMove() {
+      if (battle.over) return;
+      if (battle.infiniteUntil > Date.now()) {   // 「无限移动」生效期间落位不扣步数，回合也不会因此结束
+        renderBattle();
+        return;
+      }
+      battle.movesLeft = Math.max(0, battle.movesLeft - 1);
+      renderBattle();
+      if (battle.movesLeft === 0) {
+        showTip("移动次数用完，自动进入下一回合");
+        endTurn();
+      }
+    }
+
+    // ===== 回收触发花色效果 =====
+    // 🔥 伤害 = 点数；💧 治疗 = 点数一半；⚡️ 伤害 = 点数一半 + 敌人下次攻击减半；🍃 成长层数 +1
+    function applyRecycleEffect(cardEl) {
+      const suit = cardEl.dataset.suit;
+      const rank = rankIndex(cardEl) + 1;              // A=1 … K=13
+      const foil = cardEl.dataset.foil === "1";        // 闪卡强化
+      const bonus = battle.growth;                     // 🍃 成长加成，作用于所有回收效果
+      const tainted = cardEl.dataset.taint === "1";    // 这张牌曾被污染过，回收时给净化加成
+      const taint = tainted ? CONFIG.taintBonus : 0;
+      // 连击倍率：连续回收越多，单次回收效果越高（第 1 张无加成，之后每张 +25%，封顶）
+      const comboMult = 1 + Math.min(Math.max(battle.combo - 1, 0), CONFIG.comboCap) * CONFIG.comboBonusPer;
+      const name = cardName(cardEl) + (foil ? "✦" : "") + (tainted ? "♻️" : "");
+      // 「发」：某花色收到 8 之后（第 9 张起）每张回收额外 +1 金。
+      // 因回收必须严格 A→K 顺序，能收回 9 就说明 8 已收，故等价于 rank ≥ 9。
+      const lucky = rank >= CONFIG.goldLuckyFrom ? CONFIG.goldLuckyBonus : 0;
+      const gold = rank + lucky;                       // 回收任意花色都按点数给金币
+      gainGold(gold);
+      const goldTail = "（+" + gold + "金" + (lucky ? " · 发+" + lucky : "") + "）";
+
+      if (suit === "fire") {
+        const dmg = Math.round((rank + bonus + (foil ? 5 : 0)) * comboMult) + taint;
+        damageEnemy(dmg);
+        log("🔥 " + name + " 回收：造成 " + dmg + " 点伤害" +
+            (battle.combo > 1 ? "（连击 ×" + comboMult.toFixed(2) + "）" : "") +
+            (tainted ? "（净化 +" + CONFIG.taintBonus + "）" : "") + goldTail);
+
+      } else if (suit === "water") {
+        // 💧 水牌：治疗；血量已满则整份治疗转成防御，没满但治疗溢出，溢出部分也转成防御
+        const heal = Math.round((Math.ceil(rank / 2) + bonus + (foil ? 4 : 0)) * comboMult) + taint;
+        const before = battle.playerHp;
+        healPlayer(heal);
+        const healed = battle.playerHp - before;       // 真正回到身上的血量
+        const overflow = heal - healed;                // 多出来的部分
+        if (overflow > 0) gainDefense(overflow);
+        const tail = (battle.combo > 1 ? "（连击 ×" + comboMult.toFixed(2) + "）" : "") +
+            (tainted ? "（净化 +" + CONFIG.taintBonus + "）" : "") + goldTail;
+        const healText = "回复 " + healed + " 点血量" +
+            (overflow > 0 ? "，溢出 " + overflow + " 点转为防御" : "");
+        if (foil) {
+          battle.freezeTurns = Math.max(battle.freezeTurns, CONFIG.refreshFreezeTurns);
+          log("💧 " + name + " 回收：" + healText + "，并冰冻敌人 " + CONFIG.refreshFreezeTurns + " 回合" + tail);
+        } else {
+          log("💧 " + name + " 回收：" + healText + tail);
+        }
+
+      } else if (suit === "thunder") {
+        const dmg = Math.round((Math.ceil(rank / 2) + bonus) * (foil ? 2 : 1) * comboMult) + taint;
+        damageEnemy(dmg);
+        battle.paralyze = true;
+        log("⚡️ " + name + " 回收：造成 " + dmg + " 点伤害" + (foil ? "（闪卡翻倍）" : "") +
+            (battle.combo > 1 ? "（连击 ×" + comboMult.toFixed(2) + "）" : "") +
+            (tainted ? "（净化 +" + CONFIG.taintBonus + "）" : "") + "，敌人下次攻击减半" + goldTail);
+
+      } else if (suit === "wood") {
+        // 🍃 成长：同一张牌只产一次成长，回溯重玩不会重复获取
+        if (battle.growthCards[cardEl.dataset.id]) {
+          log("🍃 " + name + " 回收：成长此前已领取，不再重复获取" + goldTail);
+        } else {
+          battle.growthCards[cardEl.dataset.id] = true;
+          const gain = 1 + (foil ? 2 : 0) + (tainted ? 1 : 0);
+          battle.growth += gain;
+          log("🍃 " + name + " 回收：成长 +" + gain + "（累计 +" + battle.growth + "）" +
+              (tainted ? "（净化额外 +1）" : "") + goldTail);
+        }
+      }
+    }
+
+    // ===== 敌人污染 =====
+    // 只用“可恢复、牌面总量守恒”的干扰，避免出现死局：
+    // 锁牌 / 冻槽会自动倒计时恢复；换花色、换点数都是成对互换，每种花色与点数的牌数不变。
+    function pollutableCards() {
+      return Array.prototype.filter.call(
+        document.querySelectorAll(".column .card"),
+        function (el) {
+          if (el.classList.contains("item")) return false;    // 道具牌不参与污染
+          if (el.classList.contains("locked")) return false;  // 已经锁住的不重复锁
+          return true;
+        }
+      );
+    }
+
+    // 造一条污染预告（只记 id，不立刻生效，留给玩家一个回合的反应时间）
+    function makePollution(kind) {
+      if (kind === "lock") {
+        const cands = pollutableCards();
+        if (!cands.length) return null;
+        const el = cands[nextInt(cands.length)];
+        return {
+          kind: "lock", targetId: el.dataset.id,
+          label: "🔒 锁住 " + cardName(el) + " " + CONFIG.lockTurns + " 回合"
+        };
+      }
+
+      if (kind === "freezeCell") {
+        const cells = Array.prototype.filter.call(
+          document.querySelectorAll(".freecell"),
+          function (cell) { return !cell.classList.contains("temp") && !cell.dataset.frozen && !cell.querySelector(".card"); }
+        );
+        if (!cells.length) return null;
+        const all = document.querySelectorAll(".freecell");
+        const cell = cells[nextInt(cells.length)];
+        const index = Array.prototype.indexOf.call(all, cell);
+        return {
+          kind: "freezeCell", cellIndex: index,
+          label: "❄️ 冻结第 " + (index + 1) + " 个调度槽 " + CONFIG.freezeCellTurns + " 回合"
+        };
+      }
+
+      const all = pollutableCards();
+
+      if (kind === "suitSwap") {
+        // 需要一张同点数、不同暖冷分组的搭档牌
+        const cands = all.filter(function (el) {
+          return all.some(function (o) {
+            return o !== el && o.dataset.rank === el.dataset.rank &&
+                   o.dataset.group !== el.dataset.group;
+          });
+        });
+        if (!cands.length) return null;
+        const a = cands[nextInt(cands.length)];
+        const partners = all.filter(function (o) {
+          return o !== a && o.dataset.rank === a.dataset.rank &&
+                 o.dataset.group !== a.dataset.group;
+        });
+        const b = partners[nextInt(partners.length)];
+        return {
+          kind: "suitSwap", targetId: a.dataset.id, partnerId: b.dataset.id,
+          label: "🌈 让 " + cardName(a) + " 与 " + cardName(b) + " 互换花色"
+        };
+      }
+
+      if (kind === "rankSwap") {
+        // 同花色的两张牌互换点数，这样每种花色的点数集合不变，仍然能收满 A→K
+        const cands = all.filter(function (el) {
+          return all.some(function (o) {
+            return o !== el && o.dataset.suit === el.dataset.suit &&
+                   o.dataset.rank !== el.dataset.rank;
+          });
+        });
+        if (!cands.length) return null;
+        const a = cands[nextInt(cands.length)];
+        const partners = all.filter(function (o) {
+          return o !== a && o.dataset.suit === a.dataset.suit &&
+                 o.dataset.rank !== a.dataset.rank;
+        });
+        const b = partners[nextInt(partners.length)];
+        return {
+          kind: "rankSwap", targetId: a.dataset.id, partnerId: b.dataset.id,
+          label: "🔀 打乱 " + cardName(a) + " 与 " + cardName(b) + " 的点数"
+        };
+      }
+
+      return null;
+    }
+
+    // 按权重抽一种污染；抽到的手段没有可用目标时，依次退到其它手段
+    function choosePollution() {
+      const kinds = ["lock", "suitSwap", "rankSwap", "freezeCell"];
+      const roll = nextInt(100);
+      let acc = 0;
+      let pick = kinds[0];
+      for (let i = 0; i < CONFIG.pollutionWeights.length; i++) {
+        acc += CONFIG.pollutionWeights[i].w;
+        if (roll < acc) { pick = CONFIG.pollutionWeights[i].kind; break; }
+      }
+      const start = kinds.indexOf(pick);
+      for (let k = 0; k < kinds.length; k++) {
+        const p = makePollution(kinds[(start + k) % kinds.length]);
+        if (p) return p;
+      }
+      return { kind: "none", label: "无（敌人已无处下手）" };
+    }
+
+    // 换花色：class、dataset 与牌面文字一起改
+    function applySuit(el, suit) {
+      el.classList.remove("fire", "thunder", "water", "wood");
+      el.classList.add(suit.type);
+      el.dataset.suit = suit.type;
+      el.dataset.group = suit.group;
+      el.querySelector(".center").textContent = suit.symbol;   // 角标只放点数，这里只更新中间大图标
+    }
+
+    function applyRank(el, rank) {
+      el.dataset.rank = rank;
+      el.querySelector(".corner").textContent = rank;
+    }
+
+    function lockCard(el) {
+      el.dataset.lock = CONFIG.lockTurns;
+      el.classList.add("locked");
+      markTainted(el);                 // 被锁住 = 被污染，回收时给净化加成
+      el.title = "被污染锁住，剩余 " + CONFIG.lockTurns + " 回合";
+    }
+
+    function unlockCard(el) {
+      el.classList.remove("locked");
+      delete el.dataset.lock;
+      el.removeAttribute("title");
+    }
+
+    // 标记一张牌被污染过：回收它时会得到额外加成（“化腐朽为神奇”）
+    function markTainted(el) {
+      el.dataset.taint = "1";
+      el.classList.add("tainted");
+    }
+
+    function freezeCell(cell) {
+      cell.dataset.frozen = CONFIG.freezeCellTurns;
+      cell.classList.add("frozen");
+    }
+
+    function unfreezeCell(cell) {
+      cell.classList.remove("frozen");
+      delete cell.dataset.frozen;
+    }
+
+    // ===== 破局技·净化：消耗成长值，主动解开一处锁牌或冻结 =====
+    let purifyMode = false;
+
+    // 现在有没有可净化的目标（被锁的牌 / 被冻结的调度槽）
+    function purifiableExists() {
+      return !!(document.querySelector(".card.locked") || document.querySelector(".freecell.frozen"));
+    }
+
+    function enterPurifyMode() {
+      if (battle.over) return;
+      if (battle.growth < CONFIG.purifyCost) {
+        showTip("成长值不足，无法净化（需要 " + CONFIG.purifyCost + " 点成长）");
+        return;
+      }
+      if (!purifiableExists()) { showTip("当前没有可净化的污染"); return; }
+      purifyMode = true;
+      document.body.classList.add("purifying");
+      document.addEventListener("pointerdown", onPurifyPointerDown, true);
+      showTip("点击一张被锁的牌或冻结的调度槽来净化（消耗 " + CONFIG.purifyCost + " 成长）");
+      updatePurifyButton();
+    }
+
+    function exitPurifyMode() {
+      purifyMode = false;
+      document.body.classList.remove("purifying");
+      document.removeEventListener("pointerdown", onPurifyPointerDown, true);
+      updatePurifyButton();
+    }
+
+    // 净化模式的点击（捕获阶段，先于牌的拖动逻辑触发）
+    function onPurifyPointerDown(ev) {
+      const t = ev.target.closest(".card.locked, .freecell.frozen");
+      if (t) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (t.classList.contains("card")) {
+          unlockCard(t);
+          log("✨ 净化成功：解开了 " + cardName(t));
+        } else {
+          unfreezeCell(t);
+          log("✨ 净化成功：解冻了一个调度槽");
+        }
+        battle.growth = Math.max(0, battle.growth - CONFIG.purifyCost);
+        exitPurifyMode();
+        refreshMovable();
+        renderBattle();
+        autoCollect();
+      } else {
+        ev.preventDefault();
+        ev.stopPropagation();
+        exitPurifyMode();     // 点到了别处 → 取消净化模式
+      }
+    }
+
+    function updatePurifyButton() {
+      const btn = document.getElementById("purify");
+      btn.disabled = battle.over || battle.growth < CONFIG.purifyCost || !purifiableExists();
+      btn.classList.toggle("on", purifyMode);
+      btn.title = "消耗 " + CONFIG.purifyCost + " 成长值，主动净化一处锁牌或冻结";
+    }
+
+    // 真正把预告的污染落到牌桌上
+    function applyPollution(p) {
+      if (!p || p.kind === "none") return;
+
+      if (p.kind === "lock") {
+        const el = cardById[p.targetId];
+        if (!el || el.closest(".foundation")) return;      // 已经被回收就不再锁
+        lockCard(el);
+        log("🔒 敌人污染：" + cardName(el) + " 被锁住 " + CONFIG.lockTurns + " 回合");
+
+      } else if (p.kind === "freezeCell") {
+        const cell = document.querySelectorAll(".freecell")[p.cellIndex];
+        if (!cell || cell.querySelector(".card") || cell.dataset.frozen) return;
+        freezeCell(cell);
+        log("❄️ 敌人污染：第 " + (p.cellIndex + 1) + " 个调度槽被冻结 " + CONFIG.freezeCellTurns + " 回合");
+
+      } else if (p.kind === "suitSwap") {
+        const a = cardById[p.targetId];
+        const b = cardById[p.partnerId];
+        if (!a || !b || a.closest(".foundation") || b.closest(".foundation")) return;
+        const na = cardName(a), nb = cardName(b);
+        const sa = suitByType(a.dataset.suit), sb = suitByType(b.dataset.suit);
+        applySuit(a, sb);
+        applySuit(b, sa);
+        markTainted(a);
+        markTainted(b);
+        log("🌈 敌人污染：" + na + " 与 " + nb + " 互换了花色");
+
+      } else if (p.kind === "rankSwap") {
+        const a = cardById[p.targetId];
+        const b = cardById[p.partnerId];
+        if (!a || !b || a.closest(".foundation") || b.closest(".foundation")) return;
+        const na = cardName(a), nb = cardName(b);
+        const ra = a.dataset.rank, rb = b.dataset.rank;
+        applyRank(a, rb);
+        applyRank(b, ra);
+        markTainted(a);
+        markTainted(b);
+        log("🔀 敌人污染：" + na + " 与 " + nb + " 互换了点数");
+      }
+    }
+
+    // 每推进一个回合，锁牌 / 冻槽的倒计时走一格
+    function tickStatuses() {
+      document.querySelectorAll(".card.locked").forEach(function (el) {
+        const left = (parseInt(el.dataset.lock, 10) || 0) - 1;
+        if (left <= 0) {
+          unlockCard(el);
+        } else {
+          el.dataset.lock = left;
+          el.title = "被污染锁住，剩余 " + left + " 回合";
+        }
+      });
+      document.querySelectorAll(".freecell.frozen").forEach(function (cell) {
+        const left = (parseInt(cell.dataset.frozen, 10) || 0) - 1;
+        if (left <= 0) unfreezeCell(cell);
+        else cell.dataset.frozen = left;
+      });
+    }
+
+    // ===== 结束回合：敌人结算，然后进入下一回合 =====
+    function endTurn() {
+      if (battle.over) return;
+
+      history = [];                       // 撤回只在本回合内有效，推进回合后清空
+      battle.combo = 0;                   // 连击不入下一回合
+      battle.forceActive = false;         // 大力移动的“启用”状态不入下一回合
+      if (pickMode) endPick();            // 点选模式不跨回合
+      tickStatuses();                     // 锁牌 / 冻槽倒计时先走一格
+
+      if (battle.timePause) {
+        battle.timePause = false;         // ⏱ 时间暂停：整个敌人回合跳过（攻击 + 污染）
+        log("⏱ 时间暂停生效：敌人跳过本回合行动");
+      } else if (battle.freezeTurns > 0) {
+        battle.freezeTurns--;             // 冰冻期间敌人整个回合都不动
+        log("❄️ 敌人被冰冻，跳过本回合行动");
+      } else {
+        // 1) 敌人按攻击力扣玩家血量（防御先挡）
+        const atk = nextAttackValue();
+        if (atk > 0) {
+          const r = damagePlayer(atk);
+          log("⚔️ 敌人攻击：" + (r.blocked > 0 ? "防御挡下 " + r.blocked + " 点，" : "") +
+              "你受到 " + r.real + " 点伤害（剩余 " + battle.playerHp + "）");
+          if (battle.playerHp === 0) { endBattle(false, "💀 你被污染体击倒了"); return; }
+        }
+        battle.paralyze = false;          // ⚡️ 的减半只吃一次
+
+        // 2) 兑现上回合预告的污染
+        if (battle.pending) {
+          applyPollution(battle.pending);
+          battle.pending = null;
+        }
+      }
+
+      // 3) 进入下一回合：回蓝、防御减半，并预告敌人的下一手
+      gainMana(CONFIG.manaRegen);
+      battle.defense = Math.floor(battle.defense / 2);
+      battle.turn++;
+      battle.movesLeft = battle.nextMoves + battle.movesBonus;   // 兑现预告的移动次数，外加「蓄力」加成
+      if (battle.movesBonus > 0) {
+        log("⏳ 蓄力生效：本回合移动次数 +" + battle.movesBonus);
+        battle.movesBonus = 0;
+      }
+      battle.nextMoves = rollMoves();        // 再预告下下回合的移动次数
+      battle.pending = choosePollution();
+      if (battle.pending.kind !== "none") log("🔮 敌人预告：" + battle.pending.label);
+
+      // 本局一次没撤回就走满规定回合 → 💎 完美主义
+      if (!battle.usedUndo && battle.turn > CONFIG.perfectTurns) {
+        grantReward("perfect", "一次没撤回就走满 " + CONFIG.perfectTurns + " 回合");
+      }
+
+      // 4) 一张牌都动不了就是死锁
+      refreshMovable();
+      if (!anyMovable()) { endBattle(false, "💀 无牌可动，牌局陷入死锁"); return; }
+      renderBattle();
+      autoCollect();
+      if (!battle.over) captureTurnStart();   // 记下新回合开始时的局面，供「回溯」使用
+    }
+
+    // 主动结束回合：剩余步数还够多就是「蓄力」，下回合移动次数 +N，然后正常推进回合
+    function endTurnManual() {
+      if (battle.over) return;
+      if (battle.movesLeft >= CONFIG.chargeMovesLeft) {
+        grantReward("charge", "剩余步数 ≥ " + CONFIG.chargeMovesLeft + " 时主动结束回合");
+        battle.movesBonus += CONFIG.chargeMoveBonus;
+      }
+      endTurn();
+    }
+
+    // 还有没有能拿起来的牌
+    function anyMovable() {
+      return Array.prototype.some.call(document.querySelectorAll(".card"), canPickUp);
+    }
+
+    // ===== 自动回收：牌局解得差不多时，能安全收回的牌自己飞回回收区 =====
+    let autoTimer = null;
+
+    // 某个分组（暖 / 冷）两个回收区里“已收到的最大点数下标”的最小值；都还没收就记 -1
+    function minGroupTopIndex(group) {
+      let min = Infinity;
+      document.querySelectorAll(".foundation").forEach(function (f) {
+        if (f.dataset.group !== group) return;
+        const t = f.dataset.top ? RANKS.indexOf(f.dataset.top) : -1;
+        if (t < min) min = t;
+      });
+      return min === Infinity ? -1 : min;
+    }
+
+    // 这张牌现在收回回收区安不安全：收回后它不会再被异组的牌当成底座。
+    // 搭牌规则是“点数正好小 1 且暖冷交替”，所以一张下标 i 的牌只会托住
+    // 异组里下标 i-1 的牌；只要异组已经收到 i-1，它就没用了，可以放心收。
+    function isSafeToAutoCollect(cardEl) {
+      const suit = suitByType(cardEl.dataset.suit);
+      if (!suit) return false;
+      const opposite = suit.group === "warm" ? "cool" : "warm";
+      return rankIndex(cardEl) <= minGroupTopIndex(opposite) + 1;
+    }
+
+    // 找一张现在能自动收回的牌：只能是某列最上面那张，或调度槽里的牌
+    function findAutoCollectTarget() {
+      const cands = [];
+      document.querySelectorAll(".column").forEach(function (col) {
+        const top = col.lastElementChild;
+        if (top && top.classList.contains("card")) cands.push(top);
+      });
+      document.querySelectorAll(".freecell .card").forEach(function (c) { cands.push(c); });
+
+      for (let i = 0; i < cands.length; i++) {
+        const el = cands[i];
+        if (el.classList.contains("item") || el.classList.contains("locked")) continue;
+        const foundation = Array.prototype.find.call(
+          document.querySelectorAll(".foundation"),
+          function (f) { return f.dataset.suit === el.dataset.suit; }
+        );
+        if (!foundation || !canRecycle(foundation, el)) continue;
+        if (!isSafeToAutoCollect(el)) continue;
+        return { el: el, foundation: foundation };
+      }
+      return null;
+    }
+
+    // 一张一张地送回去，中间留一点间隔，看起来像自己一路飞回回收区
+    function autoCollect() {
+      clearTimeout(autoTimer);
+      autoTimer = null;
+      if (battle.over || drag) return;      // 战斗结束或正在拖动时不插手
+
+      const hit = findAutoCollectTarget();
+      if (!hit) return;
+
+      // 自动回收同样触发花色效果（伤害 / 治疗 / 成长），但不占用撤回栈
+      placeRun([hit.el], { el: hit.foundation, kind: "foundation" });
+      refreshMovable();
+      renderBattle();
+      checkWin();
+      autoTimer = setTimeout(autoCollect, 140);
+    }
+
+    // ===== 背包 =====
+    function renderBag() {
+      const box = document.getElementById("bag-items");
+      box.innerHTML = "";
+      if (!battle.bag.length) {
+        const empty = document.createElement("div");
+        empty.className = "bag-empty";
+        empty.textContent = "背包是空的（牌列里金色的道具牌挖到最上面后点击收取）";
+        box.appendChild(empty);
+        return;
+      }
+      battle.bag.forEach(function (t, i) {
+        const row = document.createElement("div");
+        row.className = "bag-item" + (t.rare ? " rare" : "");
+        row.innerHTML = '<span class="bag-icon">' + t.icon + '</span>' +
+          '<span><span class="bag-name">' + t.name + '</span><br>' +
+          '<span class="bag-desc">' + t.desc + '</span></span>';
+        row.addEventListener("click", function () { useBagItem(i); });
+        box.appendChild(row);
+      });
+    }
+
+    function useBagItem(index) {
+      if (battle.over) return;
+      const t = battle.bag[index];
+      if (!t) return;
+
+      if (t.id === "potion") {
+        if (battle.playerHp >= CONFIG.playerMaxHp) { showTip("血量已满，不需要治疗"); return; }
+        const before = battle.playerHp;
+        healPlayer(t.heal);
+        log("🧪 使用治疗药剂：回复 " + (battle.playerHp - before) + " 点血量");
+      } else if (t.id === "hourglass") {
+        battle.freezeTurns = Math.max(battle.freezeTurns, CONFIG.refreshFreezeTurns);
+        log("⏳ 使用时间禁锢：敌人被冰冻 " + CONFIG.refreshFreezeTurns + " 回合");
+      } else if (t.id === "key") {
+        let n = 0;
+        document.querySelectorAll(".card.locked").forEach(function (el) { unlockCard(el); n++; });
+        document.querySelectorAll(".freecell.frozen").forEach(function (c) { unfreezeCell(c); n++; });
+        log("🗝 使用万能钥匙：解除了 " + n + " 处污染");
+      } else if (t.id === "cell") {
+        const temp = document.querySelector(".freecell.temp");
+        if (temp && !temp.classList.contains("hidden")) {
+          showTip("已经有一个临时调度槽在场，等它用完再召唤新的"); return;
+        }
+        if (temp) {
+          temp.classList.remove("hidden");
+          delete temp.dataset.used;
+          log("🔄 使用临时调度槽：获得一个额外的调度槽（用完即消失）");
+        }
+      } else if (t.id === "force") {
+        battle.forceCharge++;
+        log("💪 使用大力移动：获得 1 层充能（点状态标签启用）");
+      } else if (t.id === "mana") {
+        const before = battle.mana;
+        gainMana(t.mana);
+        log("🧿 使用回蓝药剂：回复 " + (battle.mana - before) + " 点魔力（剩余 " + battle.mana + "）");
+      } else if (t.id === "shield") {
+        const before = battle.defense;
+        gainDefense(CONFIG.shieldValue);
+        log("🛡 使用护盾符：防御 +" + (battle.defense - before) + "（当前 " + battle.defense + "）");
+      } else if (t.id === "foresee") {
+        battle.pending = choosePollution();
+        log("🎲 使用预知：敌人下回合的污染已重掷 → " + battle.pending.label);
+      } else if (t.id === "infmove") {
+        startInfinite();
+
+      // ===== 条件奖励道具 =====
+      } else if (t.id === "shuffle") {
+        if (!useShuffle()) return;             // 洗不动就不消耗道具
+        log("🧹 使用洗牌：牌列里剩余未回收的牌已重新洗过并重发");
+      } else if (t.id === "timepause") {
+        battle.timePause = true;
+        log("⏱ 使用时间暂停：敌人下一次行动将被跳过");
+      } else if (t.id === "snipe") {
+        damageEnemy(CONFIG.snipeDamage);
+        log("🎯 使用定点狙击：直接对敌人造成 " + CONFIG.snipeDamage + " 点伤害");
+      } else if (t.id === "perfect") {
+        gainGold(CONFIG.perfectGold);
+        log("💎 使用完美主义：获得 " + CONFIG.perfectGold + " 金币");
+      } else if (t.id === "supply") {
+        drawRandomItems(CONFIG.supplyDraw);
+      } else if (t.id === "charge") {
+        battle.movesBonus += CONFIG.chargeMoveBonus;
+        log("⏳ 使用蓄力：下回合移动次数 +" + CONFIG.chargeMoveBonus);
+      } else if (t.id === "tornado") {
+        beginPick("tornado", index);
+        renderBattle();
+        return;                        // 龙卷风搬成功后才从背包扣掉道具
+      } else if (t.id === "swap") {
+        beginPick("swap", index);
+        renderBattle();
+        return;                        // 交换成功后才从背包扣掉道具
+      } else if (t.id === "drop") {
+        beginPick("drop", index);
+        renderBattle();
+        return;                        // 降落成功后才从背包扣掉道具
+      }
+
+      battle.bag.splice(index, 1);
+      refreshMovable();
+      renderBattle();
+      autoCollect();
+    }
+
+    // 把露在最上面的道具牌收进背包
+    function collectItem(el) {
+      if (battle.over || el.dataset.taken === "1") return;
+      if (el !== el.parentElement.lastElementChild) return;
+      const type = ITEM_TYPES.find(function (t) { return t.id === el.dataset.item; });
+      if (!type) return;
+
+      el.dataset.taken = "1";
+      el.remove();                        // 从牌桌拿走；元素仍留在 cardById，撤回存档靠 taken 标记跳过它
+      battle.bag.push(type);
+      log("🎁 拾取道具：" + type.icon + " " + type.name);
+      // 把埋在牌列里的道具牌全部挖出来 → 📦 补给箱
+      if (!document.querySelectorAll(".column .card.item").length) {
+        grantReward("supply", "把牌列里的道具牌全部挖了出来");
+      }
+      refreshMovable();
+      renderBattle();
+      autoCollect();
+    }
+
+    // ===== 资源操作：换蓝 / 加速 / 商店 / 抽卡 =====
+
+    // 用血量换魔力（1 血 → 2 蓝），留 1 点血保底
+    function convertHpToMana() {
+      if (battle.over) return;
+      if (battle.playerHp <= 1) { showTip("血量太低，不能再换蓝了"); return; }
+      if (battle.mana >= CONFIG.manaMax) { showTip("魔力已满，无需换蓝"); return; }
+      battle.playerHp -= 1;
+      gainMana(CONFIG.hpToMana);
+      log("🔺 换蓝：消耗 1 点血量，回复 " + CONFIG.hpToMana + " 点魔力（剩余 " + battle.mana + "）");
+      renderBattle();
+    }
+
+    // 消耗魔力，本回合多走一步
+    function buyExtraMove() {
+      if (battle.over) return;
+      if (battle.mana < CONFIG.extraMoveCost) {
+        showTip("魔力不足，加速需要 " + CONFIG.extraMoveCost + " 点魔力");
+        return;
+      }
+      battle.mana -= CONFIG.extraMoveCost;
+      battle.movesLeft += 1;
+      log("⚡ 加速：-" + CONFIG.extraMoveCost + " 魔力，本回合 +1 次移动");
+      renderBattle();
+    }
+
+    // 商店面板：花金币直购大力移动 / 抽随机道具
+    function renderShop() {
+      const panel = document.getElementById("shop");
+      if (!panel.classList.contains("open")) return;      // 面板关着就不用刷
+      const box = document.getElementById("shop-items");
+      box.innerHTML = "";
+      const rows = [
+        { icon: "💪", name: "大力移动", desc: "获得 1 层充能", cost: CONFIG.shopForceCost, act: buyForce },
+        { icon: "🎁", name: "抽取随机道具", desc: "从道具池里随机获得 1 件", cost: CONFIG.drawCost, act: drawItem }
+      ];
+      rows.forEach(function (r) {
+        const row = document.createElement("div");
+        row.className = "shop-item" + (battle.gold < r.cost ? " disabled" : "");
+        row.innerHTML = '<span class="shop-icon">' + r.icon + '</span>' +
+          '<span><span class="bag-name">' + r.name + '</span><br>' +
+          '<span class="bag-desc">' + r.desc + '</span></span>' +
+          '<span class="shop-cost">' + r.cost + ' 金</span>';
+        row.addEventListener("click", function () {
+          if (battle.over) return;
+          if (battle.gold < r.cost) { showTip("金币不足（需要 " + r.cost + " 金币）"); return; }
+          r.act();
+        });
+        box.appendChild(row);
+      });
+    }
+
+    function buyForce() {
+      battle.gold -= CONFIG.shopForceCost;
+      battle.forceCharge++;
+      log("🛒 购买：💪 大力移动（-" + CONFIG.shopForceCost + " 金）");
+      renderBattle();
+    }
+
+    function drawItem() {
+      battle.gold -= CONFIG.drawCost;
+      const t = randomBasicItem();
+      battle.bag.push(t);
+      log("🎲 抽卡：花费 " + CONFIG.drawCost + " 金，抽到 " + t.icon + " " + t.name);
+      renderBattle();
+    }
+
+    // 普通道具池：抽卡 / 补给箱 / 埋牌都用它，条件奖励道具（rare）不会被抽到
+    function randomBasicItem() {
+      const pool = ITEM_TYPES.filter(function (t) { return !t.rare; });
+      return pool[nextInt(pool.length)];
+    }
+
+    // 📦 补给箱：立刻再抽 n 件随机道具
+    function drawRandomItems(n) {
+      const got = [];
+      for (let i = 0; i < n; i++) {
+        const t = randomBasicItem();
+        battle.bag.push(t);
+        got.push(t.icon + " " + t.name);
+      }
+      log("📦 使用补给箱：立刻再抽 " + n + " 件道具 → " + got.join("、"));
+      showTip("📦 补给箱：获得 " + got.join("、"));
+      renderBattle();
+    }
+
+    // 🧹 洗牌：把牌列里剩余未回收的牌重新洗一遍，再轮流发回 8 列
+    function useShuffle() {
+      const cols = Array.prototype.slice.call(document.querySelectorAll(".column"));
+      const cards = [];
+      cols.forEach(function (col) {
+        Array.prototype.forEach.call(col.children, function (c) { cards.push(c); });
+      });
+      if (cards.length < 2) { showTip("牌列里没有足够的牌可以洗"); return false; }
+      for (let i = cards.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = cards[i]; cards[i] = cards[j]; cards[j] = tmp;
+      }
+      cols.forEach(function (col) { col.innerHTML = ""; });
+      cards.forEach(function (c, i) { cols[i % cols.length].appendChild(c); });
+      refreshMovable();
+      checkRewards();                     // 洗牌后可能刚好腾空了一整列
+      return true;
+    }
+
+    // ===== 无限移动：真实 30 秒倒计时，期间落位不消耗移动次数 =====
+    let infTimer = null;
+
+    function startInfinite(seconds) {
+      const secs = seconds || CONFIG.infiniteSeconds;
+      battle.infiniteUntil = Date.now() + secs * 1000;
+      if (infTimer) clearInterval(infTimer);
+      infTimer = setInterval(function () {
+        if (Date.now() >= battle.infiniteUntil) {
+          stopInfinite();
+          log("♾ 无限移动结束");
+        }
+        renderBattle();
+      }, 250);
+      log("♾ 开启无限移动：" + secs + " 秒内落位不消耗移动次数");
+      renderBattle();
+    }
+
+    function stopInfinite() {
+      if (infTimer) { clearInterval(infTimer); infTimer = null; }
+      battle.infiniteUntil = 0;
+    }
+
+    // ===== 点选模式：任意交换 / 强制降落 / 龙卷风 =====
+    let pickMode = null;      // { kind: "swap" | "drop" | "tornado", first: 元素|null, second: 元素|null, bagIndex: 道具下标 }
+
+    function beginPick(kind, bagIndex) {
+      if (battle.over) return;
+      pickMode = { kind: kind, first: null, second: null, bagIndex: bagIndex };
+      document.body.classList.add("picking");
+      document.addEventListener("pointerdown", onPickPointerDown, true);
+      if (kind === "swap") {
+        showTip("点选第一张牌（橙色高亮）；再点同一张可取消；两张选好后在背包里按「确定交换」");
+      } else if (kind === "tornado") {
+        showTip("先点要搬走的那张牌（橙色），再点目标列的一张牌（青绿）；无视移动上限");
+      } else {
+        showTip("点选任意一张牌（含被压住的），把它强行送进空闲调度槽");
+      }
+      updatePickActions();
+      renderBattle();
+    }
+
+    function endPick() {
+      pickMode = null;
+      document.body.classList.remove("picking");
+      document.removeEventListener("pointerdown", onPickPointerDown, true);
+      document.querySelectorAll(".card.pick-first, .card.pick-second").forEach(function (c) {
+        c.classList.remove("pick-first");
+        c.classList.remove("pick-second");
+      });
+      updatePickActions();
+    }
+
+    // 背包底部的「确定交换 / 取消」操作条：仅交换模式且两张牌都选好时出现
+    function updatePickActions() {
+      const bar = document.getElementById("pick-actions");
+      if (!bar) return;
+      const ready = !!(pickMode && pickMode.kind === "swap" && pickMode.first && pickMode.second);
+      bar.classList.toggle("open", ready);
+      bar.innerHTML = "";
+      if (!ready) return;
+      const ok = document.createElement("button");
+      ok.className = "ok";
+      ok.textContent = "确定交换";
+      ok.addEventListener("click", function (e) { e.stopPropagation(); confirmSwap(); });
+      const cancel = document.createElement("button");
+      cancel.className = "cancel";
+      cancel.textContent = "取消";
+      cancel.addEventListener("click", function (e) { e.stopPropagation(); clearSwapSelection(); });
+      bar.appendChild(ok);
+      bar.appendChild(cancel);
+    }
+
+    // 清空两张牌的选中高亮，但停在交换点选模式里，方便重新选
+    function clearSwapSelection() {
+      if (!pickMode) return;
+      [pickMode.first, pickMode.second].forEach(function (el) {
+        if (el) { el.classList.remove("pick-first"); el.classList.remove("pick-second"); }
+      });
+      pickMode.first = null;
+      pickMode.second = null;
+      updatePickActions();
+    }
+
+    // 真正执行交换：只有两张牌都确认选好、且点了「确定交换」才会走到这里
+    function confirmSwap() {
+      if (!pickMode || pickMode.kind !== "swap" || !pickMode.first || !pickMode.second) return;
+      const a = pickMode.first, b = pickMode.second;
+      const na = cardName(a), nb = cardName(b);
+      const snap = serialize();
+      const state = captureCombatState();
+      const refund = battle.bag[pickMode.bagIndex];      // 记录这步消耗的道具，撤回时归还
+      swapElements(a, b);
+      history.push({ snap: snap, state: state, refund: refund });
+      battle.bag.splice(pickMode.bagIndex, 1);           // 交换真正生效才扣道具
+      endPick();
+      log("🔁 任意交换：" + na + " 与 " + nb + " 交换了位置");
+      refreshMovable();
+      checkRewards();
+      renderBattle();
+      checkWin();
+      autoCollect();
+    }
+
+    // 点选模式的点击（捕获阶段，先于牌的拖动逻辑触发）
+    function onPickPointerDown(ev) {
+      if (!pickMode) return;
+      // 背包里的「确定 / 取消」按钮交给各自的 click 处理，不当作“点空白取消”
+      if (ev.target.closest("#pick-actions")) return;
+      const el = ev.target.closest(".card");
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      // 点空白处 / 点了回收区或道具牌 → 取消，不消耗道具
+      if (!el || el.classList.contains("item") || el.closest(".foundation")) {
+        endPick();
+        renderBattle();
+        return;
+      }
+
+      if (pickMode.kind === "swap") {
+        // 再点第一张 → 取消对它的高亮（若已有第二张，则第二张顶上成为第一张）
+        if (el === pickMode.first) {
+          el.classList.remove("pick-first");
+          pickMode.first = pickMode.second;
+          pickMode.second = null;
+          if (pickMode.first) {
+            pickMode.first.classList.remove("pick-second");
+            pickMode.first.classList.add("pick-first");
+          }
+          updatePickActions();
+          return;
+        }
+        // 再点第二张 → 取消对它的高亮
+        if (el === pickMode.second) {
+          el.classList.remove("pick-second");
+          pickMode.second = null;
+          updatePickActions();
+          return;
+        }
+        if (!pickMode.first) {
+          pickMode.first = el;
+          el.classList.add("pick-first");
+          showTip("已选第一张（橙色）；再点第二张（青绿色），然后在背包里按「确定交换」");
+          updatePickActions();
+          return;
+        }
+        pickMode.second = el;
+        el.classList.add("pick-second");
+        showTip("两张都选好了，在背包里按「确定交换」");
+        updatePickActions();
+      } else if (pickMode.kind === "tornado") {
+        // 再点第一张 → 取消对它的高亮
+        if (el === pickMode.first) {
+          el.classList.remove("pick-first");
+          pickMode.first = null;
+          showTip("已取消选择，重新点要搬走的那张牌");
+          return;
+        }
+        if (!pickMode.first) {
+          pickMode.first = el;
+          el.classList.add("pick-first");
+          showTip("已选中要搬走的牌（橙色）；再点目标列的一张牌（青绿）");
+          return;
+        }
+        applyTornado(pickMode.first, el);
+      } else {
+        const name = cardName(el);
+        const snap = serialize();
+        const state = captureCombatState();
+        const refund = battle.bag[pickMode.bagIndex];  // 记录这步消耗的道具，撤回时归还
+        if (!dropToFreeCell(el)) { renderBattle(); return; }
+        history.push({ snap: snap, state: state, refund: refund });
+        battle.bag.splice(pickMode.bagIndex, 1);       // 成功降落才扣道具
+        endPick();
+        log("🪂 强制降落：" + name + " 被强行送进了调度槽");
+        refreshMovable();
+        checkRewards();
+        renderBattle();
+        checkWin();
+        autoCollect();
+      }
+    }
+
+    // 交换两个元素在 DOM 里的位置（用一个占位元素做中转，相邻 / 跨列都适用）
+    function swapElements(a, b) {
+      if (a === b) return;
+      const ph = document.createElement("span");
+      a.parentElement.insertBefore(ph, a);
+      b.parentElement.insertBefore(a, b);
+      ph.parentElement.insertBefore(b, ph);
+      ph.remove();
+    }
+
+    // 把一张牌（可以是被压住的）强行搬到一个空闲调度槽
+    function dropToFreeCell(el) {
+      const cells = document.querySelectorAll(".freecell");
+      let cell = null;
+      for (let i = 0; i < cells.length; i++) {
+        const c = cells[i];
+        if (c.classList.contains("temp")) continue;
+        if (c.dataset.frozen) continue;
+        if (c.querySelector(".card")) continue;
+        cell = c;
+        break;
+      }
+      if (!cell) { showTip("没有空闲的调度槽，无法降落"); return false; }
+      cell.appendChild(el);
+      return true;
+    }
+
+    // 🌪 龙卷风：把 src 及其下方的整摞合法牌序搬到 dst 所在列，无视移动上限
+    function applyTornado(src, dst) {
+      const srcCol = src.parentElement;
+      const dstCol = dst.parentElement;
+      if (!srcCol.classList.contains("column") || !dstCol.classList.contains("column")) {
+        showTip("龙卷风只能搬牌列里的牌"); endPick(); renderBattle(); return;
+      }
+      if (srcCol === dstCol) { showTip("目标列不能和来源列相同"); return; }
+      if (src.classList.contains("locked")) { showTip("这张牌被污染锁住了，搬不动"); return; }
+      const run = getRun(src);
+      if (!isValidRun(run)) { showTip("这摞牌不是连续牌序，搬不动"); return; }
+      const top = dstCol.lastElementChild;
+      if (top) {
+        if (top.classList.contains("item")) { showTip("目标列顶上是道具牌，不能当底座"); return; }
+        if (rankIndex(top) !== rankIndex(src) + 1 || groupOf(top) === groupOf(src)) {
+          showTip("目标列的顶牌接不住这摞牌（需要点数大 1 且暖冷交替）"); return;
+        }
+      }
+      const snap = serialize();
+      const state = captureCombatState();
+      const refund = battle.bag[pickMode.bagIndex];       // 撤回时归还龙卷风道具
+      const bagIndex = pickMode.bagIndex;
+      const head = cardName(src);
+      const moved = run.length;
+      run.forEach(function (c) { dstCol.appendChild(c); });   // 整摞搬过去，不校验移动上限
+      history.push({ snap: snap, state: state, refund: refund });
+      battle.bag.splice(bagIndex, 1);                      // 真正搬成功才扣道具
+      endPick();
+      log("🌪 龙卷风：" + head + " 及下方 " + moved + " 张牌搬到另一列（无视移动上限）");
+      refreshMovable();
+      checkRewards();
+      renderBattle();
+      checkWin();
+      autoCollect();
+    }
+
+    // ===== 战斗栏渲染 =====
+    function telegraphText() {
+      if (battle.over) return "";
+      if (battle.freezeTurns > 0) return "❄️ 敌人被冰冻，暂停行动";
+      return "⚔️ 下回合攻击 " + nextAttackValue() + " · 移动 " + battle.nextMoves + " · " +
+        (battle.pending ? battle.pending.label : "无污染");
+    }
+
+    function renderBattle() {
+      document.getElementById("player-hp-fill").style.width =
+        (battle.playerHp / CONFIG.playerMaxHp * 100) + "%";
+      document.getElementById("player-hp-num").textContent =
+        battle.playerHp + " / " + CONFIG.playerMaxHp;
+
+      // 资源栏：魔力条 / 金币 / 防御
+      document.getElementById("mana-fill").style.width =
+        (battle.mana / CONFIG.manaMax * 100) + "%";
+      document.getElementById("mana-num").textContent = battle.mana + " / " + CONFIG.manaMax;
+      document.getElementById("gold-num").textContent = "🪙 " + battle.gold + " 金";
+      document.getElementById("defense-num").textContent = battle.defense > 0 ? "🛡 " + battle.defense : "";
+
+      document.getElementById("enemy-hp-fill").style.width =
+        (battle.enemyHp / CONFIG.enemyMaxHp * 100) + "%";
+      document.getElementById("enemy-hp-num").textContent =
+        battle.enemyHp + " / " + CONFIG.enemyMaxHp;
+
+      document.getElementById("turn-label").textContent = "第 " + battle.turn + " 回合";
+      document.getElementById("telegraph").textContent = telegraphText();
+
+      const growth = document.getElementById("growth-chip");
+      growth.textContent = "🍃 成长 +" + battle.growth;
+      growth.classList.toggle("show", battle.growth > 0);
+
+      const freeze = document.getElementById("freeze-chip");
+      freeze.textContent = "❄️ 冰冻 " + battle.freezeTurns + " 回合";
+      freeze.classList.toggle("show", battle.freezeTurns > 0);
+
+      // 无限移动的倒计时
+      const inf = document.getElementById("inf-chip");
+      const infLeft = Math.max(0, battle.infiniteUntil - Date.now());
+      if (infLeft > 0) {
+        inf.classList.add("show");
+        inf.textContent = "♾ 无限移动 " + Math.ceil(infLeft / 1000) + "s";
+      } else {
+        inf.classList.remove("show");
+      }
+
+      const force = document.getElementById("force-chip");
+      if (battle.forceCharge <= 0) {
+        force.classList.remove("show");
+        force.classList.remove("on");
+      } else {
+        force.classList.add("show");
+        force.textContent = battle.forceActive ? "💪 大力移动生效中" : "💪 大力移动 ×" + battle.forceCharge;
+        force.classList.toggle("on", battle.forceActive);
+      }
+
+      const stuck = document.getElementById("stuck-chip");
+      stuck.classList.toggle("show", !battle.over && !anyMovable());
+
+      document.getElementById("moves").textContent =
+        battle.over ? "移动 —" :
+          (battle.infiniteUntil > Date.now() ? "移动 ∞" : "移动 " + battle.movesLeft + " 步");
+
+      // 资源按钮的可用状态
+      document.getElementById("hp2mana").disabled =
+        battle.over || battle.playerHp <= 1 || battle.mana >= CONFIG.manaMax;
+      document.getElementById("extra-move").disabled =
+        battle.over || battle.mana < CONFIG.extraMoveCost;
+      document.getElementById("rewind").disabled =
+        battle.over || !turnStartSnapshot ||
+        battle.mana < CONFIG.rewindManaCost || battle.growth < CONFIG.rewindGrowthCost;
+      document.getElementById("shop-btn").disabled = battle.over;
+      document.getElementById("end-turn").disabled = battle.over;
+
+      renderBag();
+      renderShop();
+      updateUndoButton();
+      updatePurifyButton();
+    }
+
+    function endBattle(win, msg) {
+      if (battle.over) return;
+      battle.over = true;
+      stopInfinite();                    // 战斗结束就掐掉无限移动的计时器
+      if (pickMode) endPick();           // 退出点选模式
+      const box = document.getElementById("win");
+      box.textContent = msg || (win ? "🎉 战斗胜利！" : "💀 战斗失败");
+      box.classList.toggle("lose", !win);
+      box.classList.add("show");
+      log(win ? "🏆 战斗胜利" : "💀 战斗失败");
+      renderBattle();
+      refreshMovable();
+    }
+
+    // ===== 生成牌与发牌 =====
+
+    // 一整副牌（4 种花色 × 13 个点数）
+    function buildDeck() {
+      const deck = [];
+      for (const suit of SUITS) {
+        for (const rank of RANKS) {
+          deck.push({ suit: suit, rank: rank });
+        }
+      }
+      return deck; // 共 52 张
+    }
+
+    let nextCardIdCounter = 0;
+
+    // 生成一张牌的 HTML 元素
+    function createCardEl(card) {
+      const el = document.createElement("div");
+      el.className = "card " + card.suit.type;   // 花色 class，决定颜色
+
+      const id = "c" + (nextCardIdCounter++);
+      el.dataset.id = id;                        // 唯一编号，撤回时靠它找回这张牌
+      cardById[id] = el;
+
+      el.dataset.rank = card.rank;               // 点数，用来判断顺序
+      el.dataset.suit = card.suit.type;          // 花色，回收时判断是不是同一个花色
+      el.dataset.group = card.suit.group;        // 暖 / 冷分组，搭牌时判断要交替
+
+      // 左上角：只放点数（花色交给中间的大图标，角标不再放小图标）
+      const corner = document.createElement("div");
+      corner.className = "corner";
+      corner.textContent = card.rank;
+      el.appendChild(corner);
+
+      // 中央：大号花色图标
+      const center = document.createElement("div");
+      center.className = "center";
+      center.textContent = card.suit.symbol;
+      el.appendChild(center);
+
+      // 按住即可拖动（鼠标 / 触屏统一用 pointer 事件）
+      el.addEventListener("pointerdown", onPointerDown);
+      return el;
+    }
+
+    // 生成一张道具牌：夹在牌列里，挖到最上面后点击即可收进背包
+    function createItemEl(type) {
+      const el = document.createElement("div");
+      el.className = "card item";
+
+      const id = "i" + (nextCardIdCounter++);
+      el.dataset.id = id;
+      el.dataset.item = type.id;                 // 收进背包时按它查出道具类型
+      cardById[id] = el;
+
+      const corner = document.createElement("div");
+      corner.className = "corner";
+      corner.textContent = "道具";
+      el.appendChild(corner);
+
+      const center = document.createElement("div");
+      center.className = "center";
+      center.textContent = type.icon;
+      el.appendChild(center);
+
+      el.title = type.name + "：" + type.desc + "（把它挖到最上面后点击收取）";
+      el.addEventListener("pointerdown", onPointerDown);
+      return el;
+    }
+
+    // 按种子发牌：Fisher-Yates 洗牌 + 轮流发到 8 列。
+    // 这套算法要和离线验证求解时用的完全一致，牌局才保证可解。
+    function buildFromSeed(seed) {
+      rngState = seed >>> 0;
+      const deck = buildDeck();
+      for (let i = deck.length - 1; i > 0; i--) {
+        const j = nextInt(i + 1);
+        const tmp = deck[i]; deck[i] = deck[j]; deck[j] = tmp;
+      }
+
+      const table = document.getElementById("table");
+      table.innerHTML = "";                      // 先清空旧的牌列
+      const COLUMN_COUNT = 8;
+      const columns = [];
+      for (let i = 0; i < COLUMN_COUNT; i++) {
+        const col = document.createElement("div");
+        col.className = "column";
+        table.appendChild(col);
+        columns.push(col);
+      }
+
+      // 轮流发牌：前 4 列各 7 张，后 4 列各 6 张
+      deck.forEach(function (card, i) {
+        columns[i % COLUMN_COUNT].appendChild(createCardEl(card));
+      });
+
+      // 52 张全部发完后，才用同一条随机流抽闪卡：抽牌结果不受影响，牌局依旧保证可解
+      Array.prototype.forEach.call(table.querySelectorAll(".card"), function (el) {
+        if (nextInt(1000) < CONFIG.foilRate * 1000) {
+          el.classList.add("foil");
+          el.dataset.foil = "1";               // 回收时触发强化效果
+        }
+      });
+
+      // 再往牌列里夹道具牌。上面只压 2~3 张牌：
+      // 调度槽一共只有 4 个，埋太深就挖不出来了。
+      // 只从普通道具池里抽，条件奖励道具（rare）不会出现在牌列里。
+      for (let i = 0; i < CONFIG.buriedItems; i++) {
+        const col = columns[i % columns.length];
+        const type = randomBasicItem();                                   // 从普通道具池里随机埋一件
+        const above = 2 + (i % 2);                                        // 压在上面的张数
+        const at = Math.max(0, col.children.length - 1 - above);
+        col.insertBefore(createItemEl(type), col.children[at] || null);
+      }
+    }
+
+    // ===== 顶部 4 个回收区：每种花色各一个 =====
+    function buildFoundations() {
+      const box = document.getElementById("foundations");
+      box.innerHTML = "";                        // 清空重建
+
+      SUITS.forEach(function (suit) {
+        const wrap = document.createElement("div");
+        wrap.className = "foundation-wrap";
+
+        const f = document.createElement("div");
+        f.className = "foundation " + suit.type;  // 花色 class，决定配色
+        f.dataset.suit = suit.type;               // 这个回收区只收哪种花色
+        f.dataset.group = suit.group;             // 暖 / 冷分组，自动回收时判断“对组”
+        f.dataset.top = "";                       // 已回收到的最大点数，空表示还没收
+        f.dataset.label = suit.symbol + "回收区";  // 空区的文字提示（CSS 读取）
+        f.title = "按 A→2→…→K 的顺序回收" + suit.symbol + "牌";
+
+        const rankLabel = document.createElement("div");
+        rankLabel.className = "foundation-rank";
+        rankLabel.textContent = "最大：—";
+
+        wrap.appendChild(f);
+        wrap.appendChild(rankLabel);
+        box.appendChild(wrap);
+      });
+    }
+
+    // ===== 底部 4 个调度槽（对应标准的 4 个空闲格）=====
+    function buildFreeCells() {
+      const box = document.getElementById("freecells");
+      box.innerHTML = "";                        // 清空重建
+
+      for (let i = 0; i < 4; i++) {
+        const cell = document.createElement("div");
+        cell.className = "freecell";
+        cell.title = "把牌拖到这里可以暂存，一次一张";
+        box.appendChild(cell);
+      }
+
+      // 临时调度槽：始终占一个位置（保证撤回存档数组长度稳定），
+      // 平时隐藏，用道具召唤后出现，清空后自动消失。它不参与整组移动上限计算。
+      const temp = document.createElement("div");
+      temp.className = "freecell temp hidden";
+      temp.title = "临时调度槽：不影响可移动牌数，用完即消失";
+      box.appendChild(temp);
+    }
+
+    // ===== 拖动 =====
+    const dragLayer = document.getElementById("drag-layer");
+    let drag = null;        // 当前拖动状态，没在拖动时为 null
+    let lastDown = null;    // 用来自己识别“双击”
+
+    // ===== 长按查看卡牌效果 =====
+    const LONG_PRESS_MS = 500;      // 按住超过这么久就算“长按”
+    let longPressTimer = null;
+
+    // 各花色的回收效果说明（与 applyRecycleEffect 的实际逻辑保持一致）
+    const SUIT_EFFECT_TEXT = {
+      fire:    "🔥 火牌：回收时对敌人造成【点数】点伤害",
+      thunder: "⚡️ 雷牌：回收时造成【点数一半】伤害，并使敌人下次攻击减半",
+      water:   "💧 水牌：回收时回复【点数一半】血量，满血或溢出部分转为防御",
+      wood:    "🍃 木牌：回收时获得 1 层成长，永久提升之后所有回收效果"
+    };
+
+    // 气泡内容 + 定位都基于被长按的那张牌
+    function showCardInfo(el, x, y) {
+      const tip = document.getElementById("card-tip");
+      let title, desc;
+      if (el.classList.contains("item")) {
+        const t = ITEM_TYPES.find(function (it) { return it.id === el.dataset.item; });
+        title = t ? t.icon + " " + t.name : "道具";
+        desc = t ? t.desc : "";
+      } else {
+        const suit = suitByType(el.dataset.suit);
+        const rank = rankIndex(el) + 1;                 // A=1 … K=13
+        title = (suit ? suit.symbol + " " : "") + cardName(el) + (el.dataset.foil === "1" ? " ✦闪卡" : "");
+        desc = (SUIT_EFFECT_TEXT[el.dataset.suit] || "") +
+               "<br>点数价值：<b>" + rank + "</b>（回收可得 " + rank + " 金币）" +
+               "<br><span style='color:#bbb'>搭牌需点数小 1 且暖冷交替</span>";
+      }
+      tip.innerHTML = '<div class="ct-title">' + title + '</div><div class="ct-desc">' + desc + '</div>';
+      tip.classList.add("show");
+
+      // 默认放在牌的上方；空间不够就放下方，并夹在视口内
+      const r = el.getBoundingClientRect();
+      const tw = tip.offsetWidth, th = tip.offsetHeight;
+      let left = Math.min(Math.max(8, r.left), window.innerWidth - tw - 8);
+      let top = r.top - th - 10;
+      if (top < 8) top = r.bottom + 10;
+      tip.style.left = left + "px";
+      tip.style.top = top + "px";
+    }
+
+    function startLongPress(el, x, y) {
+      cancelLongPress();
+      longPressTimer = setTimeout(function () {
+        longPressTimer = null;
+        if (!drag) return;
+        drag.longPressed = true;                       // 长按只是查看，松手不算移动
+        showCardInfo(el, x, y);
+      }, LONG_PRESS_MS);
+    }
+
+    function cancelLongPress() {
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    }
+
+    function hideCardInfo() {
+      document.getElementById("card-tip").classList.remove("show");
+    }
+
+    // ===== 拖动时高亮所有可接牌的目标 =====
+    function showDropHints() {
+      clearDropHints();
+      if (!drag) return;
+      // 能真正落上去的合法接收方 → 绿色高亮
+      drag.targets.forEach(function (t) {
+        if (t.kind === "column") {
+          const top = t.el.lastElementChild;           // 牌列的“底座”是最上面那张牌
+          if (top) top.classList.add("drop-hint");
+        } else {
+          t.el.classList.add("drop-hint");             // 空调度槽 / 回收区本身高亮
+        }
+      });
+
+      // 点数正好大 1 且暖冷交替满足、但当下还不能落上去的目标牌 → 橙色弱高亮；
+      // 不满足暖冷交替（同组）的目标牌不做任何高亮。
+      const head = drag.run[0];
+      const wantRank = RANKS[rankIndex(head) + 1];
+      if (!wantRank) return;                           // 拖的是 K，没有更大的点数
+      document.querySelectorAll(".column").forEach(function (col) {
+        if (col === drag.originColumn) return;
+        const top = col.lastElementChild;
+        if (!top || top.classList.contains("item")) return;   // 空列 / 道具牌不参与
+        if (top.classList.contains("drop-hint")) return;      // 已按合法绿色高亮
+        if (top.dataset.rank === wantRank && top.dataset.group !== head.dataset.group) {
+          top.classList.add("drop-hint-weak");
+        }
+      });
+    }
+
+    function clearDropHints() {
+      document.querySelectorAll(".drop-hint, .drop-hint-weak").forEach(function (el) {
+        el.classList.remove("drop-hint");
+        el.classList.remove("drop-hint-weak");
+      });
+    }
+
+    // 按住一张牌：可以移动就开始拖动，不能移动则完全没反应
+    function onPointerDown(ev) {
+      if (ev.button !== 0 && ev.pointerType === "mouse") return;   // 只响应鼠标左键
+      const el = ev.currentTarget;
+
+      // 道具牌：不参与拖动，挖到最上面后点击即可收进背包
+      if (el.classList.contains("item")) {
+        if (el.parentElement && el === el.parentElement.lastElementChild && !battle.over) {
+          ev.preventDefault();
+          collectItem(el);
+        } else {
+          showTip("把这张道具牌上方的牌移走，露出来后点击收取");
+        }
+        return;
+      }
+
+      if (!canPickUp(el)) {            // 无法移动的牌不可点击，也不可拖动
+        if (el.classList.contains("locked")) showTip("这张牌被污染锁住了");
+        return;
+      }
+
+      // 自己识别双击：同一张牌 350ms 内按下第二次 → 自动判断去处
+      const now = Date.now();
+      if (lastDown && lastDown.el === el && now - lastDown.time < 350) {
+        lastDown = null;
+        ev.preventDefault();
+        autoPlace(el);
+        return;
+      }
+      lastDown = { el: el, time: now };
+
+      ev.preventDefault();
+
+      const run = getRun(el);
+      const rect = el.getBoundingClientRect();
+
+      drag = {
+        run: run,
+        snapshot: serialize(),                 // 拖动前先存档，落位成功后才记录进撤回栈
+        combatState: captureCombatState(),     // 同步存档战斗数值，撤回时一并还原
+        originParent: el.parentElement,
+        originNext: run[run.length - 1].nextElementSibling,  // 放不下时插回这个位置之前
+        originColumn: el.closest(".column"),
+        originCell: el.closest(".freecell"),
+        offsetX: ev.clientX - rect.left,       // 手指 / 鼠标在牌面内的位置
+        offsetY: ev.clientY - rect.top,
+        startX: ev.clientX,                    // 用于判断“有没有真的移动过”
+        startY: ev.clientY,
+        moved: false,
+        longPressed: false,
+        snap: null
+      };
+      drag.targets = validTargets(run, drag.originColumn, drag.originCell);
+      showDropHints();                         // 高亮所有能接住这组牌的目标
+      startLongPress(el, ev.clientX, ev.clientY);   // 按住不动 500ms 显示效果说明
+
+      // 拖动期间锁住牌桌的最小高度：否则被拿起的列会变矮，
+      // 下方的调度槽跟着上移，吸附位置就会跟着跳。
+      const table = document.getElementById("table");
+      drag.tableMinHeight = table.style.minHeight;
+      table.style.minHeight = table.offsetHeight + "px";
+
+      // 把这一组牌搬到拖动层，并让它的左上角停在原来的位置。
+      // 先清掉列内联边距：压缩得很紧的列拖出来时，也能按默认间距看清楚
+      run.forEach(function (c) { c.style.marginBottom = ""; dragLayer.appendChild(c); });
+      dragLayer.classList.add("show");
+      dragLayer.style.transform = "translate(" + rect.left + "px," + rect.top + "px)";
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+      window.addEventListener("pointercancel", onPointerCancel);
+    }
+
+    function onPointerMove(ev) {
+      if (!drag) return;
+
+      // 一旦真的移动过，就取消“长按查看”并收起气泡
+      if (!drag.moved &&
+          (Math.abs(ev.clientX - drag.startX) + Math.abs(ev.clientY - drag.startY) > 8)) {
+        drag.moved = true;
+        drag.longPressed = false;
+        cancelLongPress();
+        hideCardInfo();
+      }
+
+      // 整组牌跟着指针走
+      dragLayer.style.transform = "translate(" +
+        (ev.clientX - drag.offsetX) + "px," + (ev.clientY - drag.offsetY) + "px)";
+
+      // 自动吸附：找范围内最近的可放置位置并高亮
+      const snap = findSnapTarget(drag.targets, ev.clientX, ev.clientY);
+      if (snap !== drag.snap) {
+        if (drag.snap) drag.snap.el.classList.remove("active-drop");
+        drag.snap = snap;
+        if (snap) snap.el.classList.add("active-drop");
+      }
+    }
+
+    function onPointerUp() {
+      cancelLongPress();
+      hideCardInfo();
+      clearDropHints();
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      removeDragListeners();
+      if (d.snap) d.snap.el.classList.remove("active-drop");
+
+      let moved = false;
+      if (d.snap && !d.longPressed) {    // 长按（只是查看说明）松手不落位
+        placeRun(d.run, d.snap);         // 吸附成功 → 落位（appendChild 会自动从拖动层移出来）
+        history.push({ snap: d.snapshot, state: d.combatState });   // 记录这步之前的局面，供撤回
+        if (d.snap && d.snap.needsForce) consumeForceCharge();  // 只有真正突破上限才消耗充能
+        moved = true;
+      } else {
+        restoreRun(d);                   // 吸附失败 / 长按查看 → 回到原位
+      }
+      dragLayer.classList.remove("show");
+      document.getElementById("table").style.minHeight = d.tableMinHeight || "";
+      refreshMovable();
+      renderBattle();
+      checkWin();                        // 先判定是否已通关，再扣步数
+      if (moved) consumeMove();          // 落位消耗 1 步，步数用尽才进下一回合
+      autoCollect();
+    }
+
+    function onPointerCancel() {
+      cancelLongPress();
+      hideCardInfo();
+      clearDropHints();
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      removeDragListeners();
+      if (d.snap) d.snap.el.classList.remove("active-drop");
+      restoreRun(d);
+      dragLayer.classList.remove("show");
+      document.getElementById("table").style.minHeight = d.tableMinHeight || "";
+      refreshMovable();
+    }
+
+    function removeDragListeners() {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
+    }
+
+    // 把这一组牌插回原来的位置
+    function restoreRun(d) {
+      const anchor = d.originNext;
+      d.run.forEach(function (c) {
+        if (anchor && anchor.parentElement === d.originParent) {
+          d.originParent.insertBefore(c, anchor);
+        } else {
+          d.originParent.appendChild(c);
+        }
+      });
+    }
+
+    // ===== 双击自动落位：优先回收区，其次调度槽，最后牌列 =====
+    function autoPlace(el) {
+      const originColumn = el.closest(".column");
+      const originCell = el.closest(".freecell");
+
+      // 牌列里只有最上面那一张能操作
+      if (originColumn && el !== originColumn.lastElementChild) {
+        showTip("只能操作一列最上面那张牌");
+        return;
+      }
+
+      const targets = validTargets([el], originColumn, originCell);
+      if (!targets.length) {
+        showTip("这张牌暂时没有可以放置的位置");
+        return;
+      }
+
+      const order = { foundation: 0, freecell: 1, column: 2 };
+      targets.sort(function (a, b) { return order[a.kind] - order[b.kind]; });
+
+      const snapshot = serialize();
+      const state = captureCombatState();
+      placeRun([el], targets[0]);
+      history.push({ snap: snapshot, state: state });
+      refreshMovable();
+      renderBattle();
+      checkWin();                        // 先判定是否已通关，再扣步数
+      consumeMove();                     // 落位消耗 1 步
+      autoCollect();
+    }
+
+    // ===== 通关判定：4 个回收区都收到 K，也就是整副牌都收完，同样算赢 =====
+    function checkWin() {
+      if (battle.over) return;
+      const done = Array.prototype.every.call(
+        document.querySelectorAll(".foundation"),
+        function (f) { return f.dataset.top === RANKS[RANKS.length - 1]; }
+      );
+      if (done) endBattle(true, "🎉 全部牌回收完成，战斗胜利！");
+    }
+
+    // ===== 新的一局：清空调度槽与回收区，发一局保证可解的牌 =====
+    function newGame() {
+      history = [];                              // 清空撤回记录
+      cardById = {};
+      nextCardIdCounter = 0;
+      lastDown = null;
+      const winBox = document.getElementById("win");
+      winBox.classList.remove("show");
+      winBox.classList.remove("lose");
+      document.getElementById("tip").textContent = "";
+
+      buildFoundations();                        // 回收区全部清空
+      buildFreeCells();                          // 调度槽全部清空
+
+      // 从“保证可解”的种子库里随机挑一局
+      const seed = SOLVABLE_SEEDS[Math.floor(Math.random() * SOLVABLE_SEEDS.length)];
+      buildFromSeed(seed);
+
+      // 重置战斗状态
+      battle.playerHp = CONFIG.playerMaxHp;
+      battle.enemyHp = CONFIG.enemyMaxHp;
+      battle.turn = 1;
+      battle.growth = 0;
+      battle.freezeTurns = 0;
+      battle.paralyze = false;
+      battle.bag = [];
+      battle.over = false;
+      battle.pending = null;
+      battle.movesLeft = rollMoves();               // 本回合移动次数
+      battle.nextMoves = rollMoves();               // 预告下一回合移动次数
+      battle.combo = 0;                             // 连击从零开始
+      battle.forceCharge = 1;                       // 大力移动：开局自带 1 个
+      battle.forceActive = false;                   // 大力移动启用状态复位
+      battle.mana = CONFIG.manaStart;               // 开局魔力
+      battle.gold = CONFIG.goldStart;               // 开局金币（留够买道具破局）
+      battle.defense = 0;                           // 防御清零
+      battle.kRewarded = {};                        // 清空 K 的奖励记录
+      battle.growthCards = {};                      // 清空成长领取记录
+      battle.runRewardTurn = -1;                    // 「连出顺子」奖励计数复位
+      battle.runRewardCount = 0;
+      battle.aRewarded = false;                     // 四花色 A 奖励复位
+      battle.luckyAnnounced = {};                   // 「收到 8（发）」播报记录复位
+      battle.rewards = {};                          // 条件奖励道具的已领记录清零
+      battle.usedUndo = false;                      // 「完美主义」要求一次不撤回
+      battle.timePause = false;                     // 时间暂停启用状态复位
+      battle.movesBonus = 0;                        // 蓄力的下回合加成清零
+      battle.cellsUsed = false;                     // 调度槽占用标记复位（防开局白送龙卷风）
+      turnStartSnapshot = null;
+      if (purifyMode) exitPurifyMode();             // 净化模式复位
+      if (pickMode) endPick();                      // 点选模式复位
+      stopInfinite();                               // 无限移动计时器复位
+
+      logLines = [];
+      document.getElementById("log").innerHTML = "";
+      document.getElementById("bag").classList.remove("open");
+
+      battle.pending = choosePollution();         // 开局先预告敌人的第一手污染
+      log("⚔️ 战斗开始：把牌回收进上方阵列来攻击污染体");
+      if (battle.pending.kind !== "none") log("🔮 敌人预告：" + battle.pending.label);
+      log("💪 开局自带 1 个大力移动；魔力 " + battle.mana + " / " + CONFIG.manaMax + "，金币 " + battle.gold);
+      log("🍀 某花色收到 8（谐音「发」）后，该花色此后每张回收额外 +" + CONFIG.goldLuckyBonus + " 金币");
+      document.getElementById("shop").classList.remove("open");
+
+      refreshMovable();
+      captureTurnStart();                         // 记下第 1 回合开始时的局面
+      renderBattle();
+    }
+
+    // ===== 新手教程：开局分步介绍基础玩法 =====
+    const TUTORIAL_STEPS = [
+      {
+        title: "🎴 目标：回收全部牌，同时打倒污染体",
+        body: "<div class='tut-line'>把 <b>52 张牌</b>按花色、从 <b>A 到 K</b> 的顺序全部收进上方阵列，就能获胜；血量被污染体打光则失败。</div>" +
+              "<div class='tut-line'>牌桌分三块：上方 <b>8 列牌堆</b>、下方左侧 <b>4 个回收区</b>、下方右侧 <b>4 个调度槽</b>。</div>"
+      },
+      {
+        title: "🧩 搭牌规则：点数小 1 + 暖冷交替",
+        body: "<div class='tut-line'>一张牌只能压到 <b>比它大 1 点</b>的牌上，并且要<b>暖冷交替</b>。</div>" +
+              "<div class='tut-line'>🔥 火 / ⚡️ 雷 属于<b>暖色组</b>，💧 水 / 🍃 木 属于<b>冷色组</b>。</div>" +
+              "<div class='tut-line'>例：水4 可以放到 火5 / 雷5 上面，但不能放到 水5 上。</div>"
+      },
+      {
+        title: "🖐 操作：按住拖动",
+        body: "<div class='tut-line'>按住一张能动的牌拖动，靠近目标 <b>70px</b> 内会自动吸附；松手落位。</div>" +
+              "<div class='tut-line'>拖动时，所有<b>能接住它的牌会被高亮</b>（绿色描边），看一眼就知道能放哪。</div>" +
+              "<div class='tut-line'><b>双击</b>一张牌可自动寻找落点；<b>长按</b>一张牌可查看它的效果说明。</div>"
+      },
+      {
+        title: "⚔️ 回收效果：不同花色不一样",
+        body: "<div class='tut-line'>🔥 火：造成【点数】点伤害</div>" +
+              "<div class='tut-line'>💧 水：回复【点数一半】血量，满血或溢出转防御</div>" +
+              "<div class='tut-line'>⚡️ 雷：造成【点数一半】伤害，敌人下次攻击减半</div>" +
+              "<div class='tut-line'>🍃 木：获得 1 层成长，永久增强后续回收效果</div>" +
+              "<div class='tut-line'>连续回收还会累积<b>连击倍率</b>，收得越顺伤害越高。</div>"
+      },
+      {
+        title: "🎒 道具与商店",
+        body: "<div class='tut-line'>有的道具牌夹在牌列里，<b>挖到最上面后点击</b>即可收进背包。</div>" +
+              "<div class='tut-line'>背包里的道具点一下就能用；也能在<b>商店</b>花金币购买或抽道具。</div>" +
+              "<div class='tut-line'>回收任意牌都会按点数获得金币，击败污染体还有额外奖励。</div>"
+      },
+      {
+        title: "🛡 战斗：回合、移动次数与污染",
+        body: "<div class='tut-line'>每回合有随机次数的移动，<b>用完自动进入下一回合</b>；敌人会提前预告下回合的攻击与污染手段。</div>" +
+              "<div class='tut-line'>污染可能是锁牌、换花色、换点数或冻槽，都可恢复，不会产生死局。</div>" +
+              "<div class='tut-line'>✨ 作为先手福利，<b>正式开局送 120 秒无限移动</b>（期间落位不消耗次数）。</div>"
+      }
+    ];
+
+    let tutIndex = 0;
+    let pendingOpeningBoost = false;   // 教程关闭后是否补发开局福利
+
+    function renderTutorial() {
+      const step = TUTORIAL_STEPS[tutIndex];
+      document.getElementById("tut-title").textContent = step.title;
+      document.getElementById("tut-body").innerHTML = step.body;
+      document.getElementById("tut-step").textContent =
+        (tutIndex + 1) + " / " + TUTORIAL_STEPS.length;
+      document.getElementById("tut-next").textContent =
+        tutIndex === TUTORIAL_STEPS.length - 1 ? "开始游戏" : "下一步";
+    }
+
+    function showTutorial(grantAfter) {
+      pendingOpeningBoost = !!grantAfter;
+      tutIndex = 0;
+      renderTutorial();
+      document.getElementById("tutorial").classList.add("show");
+    }
+
+    function nextTutorial() {
+      if (tutIndex < TUTORIAL_STEPS.length - 1) {
+        tutIndex++;
+        renderTutorial();
+      } else {
+        closeTutorial();
+      }
+    }
+
+    function closeTutorial() {
+      document.getElementById("tutorial").classList.remove("show");
+      if (pendingOpeningBoost) {           // 首次进入：教程结束后发放开局先手福利
+        pendingOpeningBoost = false;
+        grantOpeningBoost();
+      }
+    }
+
+    // 正式开局先手福利：120 秒无限移动
+    function grantOpeningBoost() {
+      if (battle.over) return;
+      startInfinite(CONFIG.openingInfiniteSeconds);
+      log("⏱ 开局先手：获得 " + CONFIG.openingInfiniteSeconds + " 秒无限移动");
+    }
+
+    // 重新开始：重开一局并同样发放开局福利
+    function restartGame() {
+      newGame();
+      grantOpeningBoost();
+    }
+
+    // 按钮绑定
+    document.getElementById("tutorial-btn").addEventListener("click", function () { showTutorial(false); });
+    document.getElementById("tut-next").addEventListener("click", nextTutorial);
+    document.getElementById("tut-skip").addEventListener("click", closeTutorial);
+    document.getElementById("undo").addEventListener("click", undo);
+    document.getElementById("restart").addEventListener("click", restartGame);
+    document.getElementById("purify").addEventListener("click", enterPurifyMode);
+    document.getElementById("force-chip").addEventListener("click", toggleForce);
+    document.getElementById("bag-btn").addEventListener("click", function () {
+      document.getElementById("bag").classList.toggle("open");
+      document.getElementById("shop").classList.remove("open");   // 两个面板同时只开一个
+    });
+    document.getElementById("shop-btn").addEventListener("click", function () {
+      document.getElementById("shop").classList.toggle("open");
+      document.getElementById("bag").classList.remove("open");
+      renderShop();
+    });
+    document.getElementById("hp2mana").addEventListener("click", convertHpToMana);
+    document.getElementById("extra-move").addEventListener("click", buyExtraMove);
+    document.getElementById("rewind").addEventListener("click", rewindTurn);
+    document.getElementById("end-turn").addEventListener("click", endTurnManual);
+
+    // 键盘：Ctrl+Z 撤回
+    window.addEventListener("keydown", function (ev) {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "z") {
+        ev.preventDefault();
+        undo();
+      }
+    });
+
+    // 出牌区不放牌时，点空白处不做任何事；开局并弹出新手教程
+    newGame();
+    showTutorial(true);
+  </script>
+</body>
+</html>
